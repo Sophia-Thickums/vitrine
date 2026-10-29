@@ -70,6 +70,26 @@ and the same entry wins. Patches and DLC are separate slots from the base game, 
 DLC whose base application is missing is retained and flagged rather than silently ignored.
 
 
+## What is proven, and what is not
+
+Measured, not asserted:
+
+| claim | how it is checked | result |
+|---|---|---|
+| decoder agrees with the assembler | 46-instruction corpus in `tests/fixtures/a64_corpus.tsv` | all match |
+| decoder covers real code | 304 compiler-emitted instructions (clang `-O0/-O2/-Os`) | 100% recognised |
+| interpreter agrees with a real emulator | `examples/diff_qemu`: 15 programs through `qemu-aarch64` | 15/15 |
+| compiler agrees with the interpreter | `tests/jit.rs`, same programs, both engines | all match |
+| x86 encoder agrees with the assembler | `examples/diff_x86`: 38 forms, byte-for-byte | all match |
+| the JIT is actually faster | `examples/bench` | 1.92x (32t box), 2.30x (RetrOasis) |
+
+**What is NOT proven:** floating point is *decoded* but not *executed* — `FMOV`,
+`FMADD`, `FMUL` and FP loads/stores refuse rather than compute, because there is no
+FP register file yet. SIMD/NEON, atomics, pointer authentication and the system
+registers are not decoded at all. There is no memory protection, no MMU and no TLB:
+the interpreter's memory is one flat array. "100% of real instructions recognised" is
+a decoding claim about a handful of programs, not a compatibility claim about an ISA.
+
 ## Building
 
 ```sh

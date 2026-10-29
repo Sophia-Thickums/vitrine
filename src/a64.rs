@@ -258,6 +258,14 @@ pub enum Instr {
         rm: u8,
         ra: u8,
     },
+    /// `LSLV`/`LSRV`/`ASRV`/`RORV` — shift by a register, not an immediate.
+    ShiftReg {
+        sf: bool,
+        kind: ShiftType,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+    },
     /// `UDIV`/`SDIV`.
     Div {
         sf: bool,
@@ -303,6 +311,29 @@ pub enum Instr {
     },
     /// `FMOV Dd, Dn` / `FMOV Sd, Sn` — register to register.
     FpMov { dp: bool, rd: u8, rn: u8 },
+    /// `FMOV Dd, #imm` / `FMOV Sd, #imm` — a floating-point immediate (the 8-bit form).
+    FpMovImm { dp: bool, rd: u8, imm8: u8 },
+    /// `FMADD`/`FMSUB`/`FNMADD`/`FNMSUB`.
+    FpFused {
+        dp: bool,
+        op: u8,
+        rd: u8,
+        rn: u8,
+        rm: u8,
+        ra: u8,
+    },
+    /// A scalar floating-point load or store (`LDR D0, [X1]` and friends).
+    ///
+    /// Decoded so that a block can be *analysed* and counted; executing it needs an FP register
+    /// file, which this crate does not have yet.
+    FpLoadStore {
+        load: bool,
+        /// Access size in bytes (1, 2, 4, 8, 16).
+        size: u8,
+        rt: u8,
+        rn: u8,
+        mode: AddressMode,
+    },
     /// An instruction this decoder does not implement. The word is preserved so a caller can
     /// log it and refuse to compile the block.
     Unknown { word: u32 },
@@ -741,6 +772,22 @@ fn decode_three_source(word: u32) -> Option<Instr> {
     // UDIV/SDIV: sf 00 11010110 Rm opcode(6) Rn Rd, opcode 000010 unsigned, 000011 signed.
     if word & 0x1FE0_0000 == 0x1AC0_0000 {
         let opcode = (word >> 10) & 0x3F;
+        // The same encoding space holds the register-controlled shifts.
+        if (0b001000..=0b001011).contains(&opcode) {
+            let kind = match opcode {
+                0b001000 => ShiftType::Lsl,
+                0b001001 => ShiftType::Lsr,
+                0b001010 => ShiftType::Asr,
+                _ => ShiftType::Ror,
+            };
+            return Some(Instr::ShiftReg {
+                sf: word >> 31 != 0,
+                kind,
+                rm: ((word >> 16) & 0x1F) as u8,
+                rn: ((word >> 5) & 0x1F) as u8,
+                rd: (word & 0x1F) as u8,
+            });
+        }
         let signed = match opcode {
             0b000010 => false,
             0b000011 => true,
@@ -794,8 +841,46 @@ fn decode_load_store(word: u32) -> Option<Instr> {
         return None;
     }
     if (word >> 26) & 1 != 0 {
-        // Vector/FP loads and stores: a later component, reported rather than mis-decoded.
-        return Some(Instr::Unknown { word });
+        // SIMD/FP load/store. The scalar forms (LDR/STR of B/H/S/D/Q) share this space; the
+        // vector-structure forms (LD1/ST2/...) do not, and are reported rather than guessed.
+        let opc = (word >> 22) & 3;
+        if opc == 3 {
+            return Some(Instr::Unknown { word });
+        }
+        let load = opc & 1 != 0;
+        let size = 1u8 << ((word >> 30) & 3);
+        let rt = (word & 0x1F) as u8;
+        let rn = ((word >> 5) & 0x1F) as u8;
+        let mode = match (word >> 24) & 3 {
+            1 => AddressMode::Offset {
+                imm: i64::from((word >> 10) & 0xFFF) * i64::from(size),
+            },
+            0 => {
+                if (word >> 21) & 1 != 0 {
+                    AddressMode::RegisterOffset {
+                        rm: ((word >> 16) & 0x1F) as u8,
+                        extend: ((word >> 13) & 7) as u8,
+                        scaled_by_size: (word >> 12) & 1 != 0,
+                    }
+                } else {
+                    let imm9 = sign_extend(u64::from((word >> 12) & 0x1FF), 9);
+                    match (word >> 10) & 3 {
+                        0 => AddressMode::Unscaled { imm: imm9 },
+                        1 => AddressMode::PostIndex { imm: imm9 },
+                        3 => AddressMode::PreIndex { imm: imm9 },
+                        _ => return Some(Instr::Unknown { word }),
+                    }
+                }
+            }
+            _ => return Some(Instr::Unknown { word }),
+        };
+        return Some(Instr::FpLoadStore {
+            load,
+            size,
+            rt,
+            rn,
+            mode,
+        });
     }
 
     let size_bits = (word >> 30) & 3;
@@ -852,6 +937,26 @@ fn decode_load_store(word: u32) -> Option<Instr> {
 }
 
 fn decode_fp(word: u32) -> Option<Instr> {
+    // FMADD/FMSUB/FNMADD/FNMSUB: M 0 S 11111 type 0 Rm 0 o1 Ra Rn Rd
+    if word & 0x5F00_0000 == 0x1F00_0000 {
+        let dp = (word >> 22) & 1 != 0;
+        return Some(Instr::FpFused {
+            dp,
+            op: (((word >> 21) & 1) << 1 | ((word >> 15) & 1)) as u8,
+            rm: ((word >> 16) & 0x1F) as u8,
+            ra: ((word >> 10) & 0x1F) as u8,
+            rn: ((word >> 5) & 0x1F) as u8,
+            rd: (word & 0x1F) as u8,
+        });
+    }
+    // FMOV (scalar, immediate): sf 0 0 11110 type 1 imm8 100 00000 Rd
+    if word & 0xFFB0_1FE0 == 0x1E20_1000 {
+        return Some(Instr::FpMovImm {
+            dp: (word >> 22) & 1 != 0,
+            imm8: ((word >> 13) & 0xFF) as u8,
+            rd: (word & 0x1F) as u8,
+        });
+    }
     // FMOV register: sf 000 11110 1 type 1 000000 10000 Rn Rd
     if word & 0xFFBF_FC00 == 0x1E20_4000 {
         let dp = (word >> 22) & 1 != 0;
@@ -983,6 +1088,13 @@ impl Instr {
             }
             Instr::MaddSub { sub: true, .. } => "msub".into(),
             Instr::Div { signed, .. } => if signed { "sdiv" } else { "udiv" }.into(),
+            Instr::ShiftReg { kind, .. } => match kind {
+                ShiftType::Lsl => "lsl",
+                ShiftType::Lsr => "lsr",
+                ShiftType::Asr => "asr",
+                ShiftType::Ror => "ror",
+            }
+            .into(),
             Instr::LoadStore { load, size, signed, mode, .. } => {
                 let base = match (load, signed, size) {
                     (true, false, 1) => "ldrb",
@@ -1027,7 +1139,23 @@ impl Instr {
                 FpOp::Div => "fdiv".into(),
                 FpOp::Neg => "fneg".into(),
             },
-            Instr::FpMov { .. } => "fmov".into(),
+            Instr::FpMov { .. } | Instr::FpMovImm { .. } => "fmov".into(),
+            Instr::FpFused { op, .. } => match op {
+                0 => "fmadd",
+                1 => "fmsub",
+                2 => "fnmadd",
+                _ => "fnmsub",
+            }
+            .into(),
+            Instr::FpLoadStore { load, size, .. } => match (load, size) {
+                (true, 1) => "ldr",
+                (true, 2) => "ldr",
+                (true, 4) => "ldr",
+                (true, 8) => "ldr",
+                (true, _) => "ldr",
+                (false, _) => "str",
+            }
+            .into(),
             Instr::Unknown { .. } => "unknown".into(),
         }
     }

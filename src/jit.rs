@@ -377,6 +377,38 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
                 c.mov_store(Reg::R15, state::x(rd), Reg::Rax);
             }
         }
+        Instr::ShiftReg {
+            sf,
+            kind,
+            rd,
+            rn,
+            rm,
+        } => {
+            // x86 shifts take the count in cl and mask it to the operand width, which is exactly
+            // A64's modulo-width rule — but only for 64-bit operands. A 32-bit guest shift needs
+            // the count masked to 5 bits explicitly, because x86 would use 6.
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+            c.mov_load(Reg::Rcx, Reg::R15, state::x(rm));
+            if !sf {
+                c.mov_imm64(Reg::Rdx, 0x1F);
+            } else {
+                c.mov_imm64(Reg::Rdx, 0x3F);
+            }
+            c.and_reg(Reg::Rcx, Reg::Rdx);
+            match kind {
+                ShiftType::Lsl => c.shift_cl(Reg::Rax, 4),
+                ShiftType::Lsr => c.shift_cl(Reg::Rax, 5),
+                ShiftType::Asr => c.shift_cl(Reg::Rax, 7),
+                ShiftType::Ror => c.shift_cl(Reg::Rax, 1),
+            }
+            if !sf {
+                c.mov_imm64(Reg::Rcx, 0xFFFF_FFFF);
+                c.and_reg(Reg::Rax, Reg::Rcx);
+            }
+            if rd != 31 {
+                c.mov_store(Reg::R15, state::x(rd), Reg::Rax);
+            }
+        }
         Instr::Div {
             sf,
             signed,

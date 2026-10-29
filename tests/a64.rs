@@ -297,3 +297,37 @@ fn an_unimplemented_instruction_is_reported_not_invented() {
         other => panic!("expected Unknown, got {other:?}"),
     }
 }
+
+#[test]
+fn every_instruction_in_compiler_output_is_recognised() {
+    // Words harvested from clang -O0/-O2/-Os aarch64 output and stored in programs.tsv. This is the
+    // honest coverage claim: these are instructions a real compiler emitted, not random words and
+    // not instructions chosen because they are easy.
+    let raw = include_str!("fixtures/programs.tsv");
+    let mut checked = 0;
+    let mut unknown = Vec::new();
+    for line in raw.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let mut f = line.split('\t');
+        let name = f.next().expect("name");
+        if !name.starts_with("real_code_") {
+            continue;
+        }
+        for w in f.next().expect("words").split_whitespace() {
+            let word = u32::from_str_radix(w.trim_start_matches("0x"), 16).expect("hex");
+            checked += 1;
+            if matches!(a64::decode(word), Instr::Unknown { .. }) {
+                unknown.push(word);
+            }
+        }
+    }
+    assert!(checked > 200, "expected a few hundred real instructions, got {checked}");
+    assert!(
+        unknown.is_empty(),
+        "{} of {checked} real instructions are unrecognised: {:08x?}",
+        unknown.len(),
+        unknown
+    );
+}

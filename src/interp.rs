@@ -432,6 +432,20 @@ impl Machine {
                 self.set_sized(rd, sf, v);
                 self.pc = next;
             }
+            Instr::ShiftReg {
+                sf,
+                kind,
+                rd,
+                rn,
+                rm,
+            } => {
+                let value = self.get_sized(rn, sf);
+                // The shift amount is taken modulo the operand width, as A64 specifies.
+                let amount = (self.get_sized(rm, sf) & if sf { 63 } else { 31 }) as u8;
+                let result = Self::shift(value, kind, amount, sf);
+                self.set_sized(rd, sf, result);
+                self.pc = next;
+            }
             Instr::Div {
                 sf,
                 signed,
@@ -556,7 +570,15 @@ impl Machine {
                 return Err(Trap::Unsupported);
             }
             Instr::Msr { .. } => return Err(Trap::Unsupported),
-            Instr::FpArith { .. } | Instr::FpMov { .. } => return Err(Trap::Unsupported),
+            Instr::FpArith { .. }
+            | Instr::FpMov { .. }
+            | Instr::FpMovImm { .. }
+            | Instr::FpFused { .. }
+            | Instr::FpLoadStore { .. } => {
+                // Decoded so blocks can be analysed and counted, but there is no FP register file
+                // here yet. A wrong answer would be worse than a refusal.
+                return Err(Trap::Unsupported);
+            }
         }
 
         Ok(())
