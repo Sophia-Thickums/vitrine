@@ -1,5 +1,5 @@
 # Version file so find_package(vitrine 0.1 CONFIG) can check compatibility.
-set(PACKAGE_VERSION "0.1.0")
+set(PACKAGE_VERSION "0.1.2")
 if(PACKAGE_VERSION VERSION_LESS PACKAGE_FIND_VERSION)
     set(PACKAGE_VERSION_COMPATIBLE FALSE)
 else()

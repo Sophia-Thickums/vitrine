@@ -1,9 +1,16 @@
 [package]
 name = "vitrine"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 description = "Rust core for the Citron Neo emulator: pipeline cache, IPC services, and the pieces where safe code costs nothing at runtime."
 license = "GPL-3.0-or-later"
+repository = "https://github.com/Sophia-Thickums/vitrine"
+readme = "README.md"
+keywords = ["aarch64", "jit", "emulator", "vulkan", "translator"]
+categories = ["emulators", "development-tools"]
+exclude = ["/.github", "/cpp/citron/shim"]
+# A Rust staticlib is the shipping artefact; the crate is not intended for crates.io, where a
+# cdylib/staticlib pair with a C header is not the expected shape.
 
 [lib]
 # cdylib so C++ links it; staticlib for a fully static binary; rlib for tests and crates.

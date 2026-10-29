@@ -1,0 +1,110 @@
+name: ci
+
+# Everything a fork needs to trust this repo, run on every push and pull request:
+#   rust    — fmt, clippy (denied warnings), the full test suite
+#   cpp     — both C++ programs actually built and RUN against the static library
+#   cmake   — find_package(vitrine CONFIG) exercised by an outside project
+#   version — a tag must match the crate version, so a download never misreports itself
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: format
+        run: cargo fmt --all -- --check
+      - name: clippy (warnings are errors)
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: tests
+        run: cargo test --release
+
+  cpp:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build the library
+        run: cargo build --release
+      # The C++ boundary is not "declared": both programs are compiled against libvitrine.a and run.
+      - name: JIT ABI check
+        run: |
+          g++ -O2 -std=c++20 -Iinclude cpp/jit_check.cpp -o /tmp/jit_check \
+              -Ltarget/release -lvitrine -Wl,-rpath,"$PWD/target/release"
+          /tmp/jit_check
+      - name: ArmInterface adapter check
+        run: |
+          g++ -O2 -std=c++20 -Wall -Wextra -Werror \
+              -Iinclude -Icpp/citron -Icpp/citron/shim \
+              cpp/citron/adapter_check.cpp cpp/citron/arm_vitrine_64.cpp -o /tmp/adapter_check \
+              -Ltarget/release -lvitrine -Wl,-rpath,"$PWD/target/release"
+          /tmp/adapter_check
+      - name: pipeline-cache C++ check builds
+        run: |
+          g++ -O2 -std=c++20 -Iinclude cpp/cpp_check.cpp -o /tmp/cpp_check \
+              -Ltarget/release -lvitrine -Wl,-rpath,"$PWD/target/release"
+
+  cmake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release
+      - name: find_package(vitrine CONFIG) from an outside project
+        run: |
+          PREFIX="$RUNNER_TEMP/vitrine-prefix"
+          mkdir -p "$PREFIX/lib/cmake/vitrine" "$PREFIX/include"
+          cp target/release/libvitrine.a "$PREFIX/lib/"
+          cp include/vitrine.h "$PREFIX/include/"
+          cp cmake/vitrineConfig.cmake cmake/vitrineConfigVersion.cmake "$PREFIX/lib/cmake/vitrine/"
+          mkdir -p "$RUNNER_TEMP/pkgtest"
+          cat > "$RUNNER_TEMP/pkgtest/main.c" <<'EOF'
+          #include <stdio.h>
+          #include "vitrine.h"
+          int main(void) {
+              printf("vitrine %s, state block %zu bytes\n",
+                     vitrine_version(), vitrine_jit_state_size());
+              return vitrine_jit_state_size() == 0 ? 1 : 0;
+          }
+          EOF
+          cat > "$RUNNER_TEMP/pkgtest/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(pkgtest C)
+          find_package(vitrine 0.1 CONFIG REQUIRED)
+          add_executable(pkgtest main.c)
+          target_link_libraries(pkgtest PRIVATE vitrine::vitrine)
+          EOF
+          cmake -S "$RUNNER_TEMP/pkgtest" -B "$RUNNER_TEMP/pkgtest/build" \
+                -DCMAKE_PREFIX_PATH="$PREFIX"
+          cmake --build "$RUNNER_TEMP/pkgtest/build"
+          "$RUNNER_TEMP/pkgtest/build/pkgtest"
+
+  version:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A download that reports a version other than its tag is a lie about what it is. v0.1.1 shipped
+      # with a crate still saying 0.1.0; this job exists so that cannot happen again silently.
+      - name: tag matches the crate version
+        run: |
+          CRATE=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          TAG=${GITHUB_REF_NAME#v}
+          echo "tag=$TAG crate=$CRATE"
+          test "$TAG" = "$CRATE" || { echo "::error::tag $TAG does not match Cargo.toml $CRATE"; exit 1; }
