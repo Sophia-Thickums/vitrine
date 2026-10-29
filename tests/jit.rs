@@ -122,6 +122,17 @@ fn compiled_memory_access_agrees_with_the_interpreter() {
 }
 
 #[test]
+fn compiled_tbz_and_adr_agree_with_the_interpreter() {
+    for name in ["tbz_branch", "adr_page"] {
+        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let mut memory = vec![0u8; 0x2000];
+        let state = run_jit(&words, &mut memory, 0x1800, 100).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let interp = run_interp(&words, 0x1800);
+        assert_eq!(state.x, interp.x, "{name}: register file differs");
+    }
+}
+
+#[test]
 fn an_unsupported_instruction_is_refused_not_miscompiled() {
     // An `MRS` has no code emitted for it (there are no system registers yet): it must come back
     // as Err, never as a silent no-op that leaves a stale value in the destination.

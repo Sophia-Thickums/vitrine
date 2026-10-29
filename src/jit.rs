@@ -514,6 +514,42 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             c.label(taken);
             epilogue(c, offset + rel, Exit::Jumped);
         }
+        Instr::Tbz {
+            nonzero,
+            rt,
+            bit,
+            offset: rel,
+        } => {
+            // Test one bit of the register: shift it down to bit 0, mask, then branch.
+            let taken = 8;
+            let done = 9;
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rt));
+            if bit != 0 {
+                c.shift_imm(Reg::Rax, 5, bit);
+            }
+            c.mov_imm64(Reg::Rcx, 1);
+            c.and_reg(Reg::Rax, Reg::Rcx);
+            c.test_reg(Reg::Rax, Reg::Rax);
+            c.jcc(if nonzero { Cc::Ne } else { Cc::E }, taken);
+            epilogue(c, offset + 4, Exit::Jumped);
+            c.label(taken);
+            epilogue(c, offset + rel, Exit::Jumped);
+            c.label(done);
+        }
+        Instr::Adr { rd, offset: rel } => {
+            c.mov_imm64(Reg::Rax, (offset + rel) as u64);
+            if rd != 31 {
+                c.mov_store(Reg::R15, state::x(rd), Reg::Rax);
+            }
+        }
+        Instr::Adrp { rd, page_offset } => {
+            // The immediate is a page number relative to the instruction's own page.
+            let base = (offset as u64) & !0xFFFu64;
+            c.mov_imm64(Reg::Rax, base.wrapping_add_signed(page_offset));
+            if rd != 31 {
+                c.mov_store(Reg::R15, state::x(rd), Reg::Rax);
+            }
+        }
         Instr::Svc { .. } => {
             epilogue(c, offset, Exit::SupervisorCall);
         }
