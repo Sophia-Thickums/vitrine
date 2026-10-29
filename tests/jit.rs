@@ -163,3 +163,15 @@ fn a_thousand_iteration_loop_agrees_with_the_interpreter() {
     let interp = run_interp(&words, 0x1800);
     assert_eq!(state.x, interp.x, "1000 iterations of add 7");
 }
+
+#[test]
+fn compiled_floating_point_agrees_with_the_interpreter() {
+    for name in ["fp_add", "fp_mul_div"] {
+        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let mut memory = vec![0u8; 0x2000];
+        let state = run_jit(&words, &mut memory, 0x1800, 200).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let interp = run_interp(&words, 0x1800);
+        assert_eq!(state.x, interp.x, "{name}: register file differs");
+        assert_eq!(state.fp, interp.fp, "{name}: FP register file differs");
+    }
+}

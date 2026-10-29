@@ -22,7 +22,7 @@
 //! requires identical architectural state — and `examples/diff_qemu.rs` already pins the interpreter
 //! to qemu. So the chain is qemu → interpreter → JIT.
 
-use crate::a64::{AddressMode, Cond, Instr, LogicalOp, MovOp, ShiftType};
+use crate::a64::{AddressMode, Cond, FpOp, Instr, LogicalOp, MovOp, ShiftType};
 use crate::block::Block;
 use crate::x86::{Cc, Code, Reg, state};
 
@@ -59,6 +59,8 @@ pub struct JitState {
     pub mem_ptr: u64,
     /// Guest memory length, for bounds (checked by the driver, not by generated code).
     pub mem_len: u64,
+    /// `V0..V31`, 16 bytes each.
+    pub fp: [[u8; 16]; 32],
 }
 
 impl JitState {
@@ -72,6 +74,7 @@ impl JitState {
             _pad: [0; 7],
             mem_ptr,
             mem_len,
+            fp: [[0; 16]; 32],
         }
     }
 
@@ -648,6 +651,102 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
                 c.mov_store(Reg::R15, state::x(rn), Reg::Rax);
             }
         }
+        // Scalar double-precision. Single-precision forms are refused rather than computed at the
+        // wrong width.
+        Instr::FpArith { dp: true, op, rd, rn, rm } => {
+            c.movsd_load(0, Reg::R15, state::fp(rn));
+            c.movsd_load(1, Reg::R15, state::fp(rm));
+            let opcode = match op {
+                FpOp::Add => 0x58,
+                FpOp::Sub => 0x5C,
+                FpOp::Mul => 0x59,
+                FpOp::Div => 0x5E,
+                FpOp::Neg => return Err(instr),
+            };
+            c.sd_arith(opcode, 0, 1);
+            c.movsd_store(Reg::R15, state::fp(rd), 0);
+        }
+        Instr::FpFused {
+            dp: true,
+            op,
+            rd,
+            rn,
+            rm,
+            ra,
+        } => {
+            // acc +/- (a * b), then negate the result for the N forms.
+            c.movsd_load(0, Reg::R15, state::fp(rn));
+            c.movsd_load(1, Reg::R15, state::fp(rm));
+            c.sd_arith(0x59, 0, 1); // mulsd
+            c.movsd_load(1, Reg::R15, state::fp(ra));
+            c.sd_arith(if op & 1 != 0 { 0x5C } else { 0x58 }, 1, 0); // acc +/- product
+            c.movsd_store(Reg::R15, state::fp(rd), 1);
+            if op & 2 != 0 {
+                // Negate: xor the sign bit. Load, flip, store.
+                c.movq_from_xmm(Reg::Rax, 1);
+                c.mov_imm64(Reg::Rcx, 1u64 << 63);
+                c.xor_reg(Reg::Rax, Reg::Rcx);
+                c.movq_to_xmm(1, Reg::Rax);
+                c.movsd_store(Reg::R15, state::fp(rd), 1);
+            }
+        }
+        Instr::FpMov { dp: true, rd, rn } => {
+            c.movsd_load(0, Reg::R15, state::fp(rn));
+            c.movsd_store(Reg::R15, state::fp(rd), 0);
+        }
+        Instr::FpMovImm { dp, rd, imm8 } => {
+            let bits = crate::interp::vfp_expand_imm(imm8, dp);
+            c.mov_imm64(Reg::Rax, bits);
+            c.movq_to_xmm(0, Reg::Rax);
+            c.movsd_store(Reg::R15, state::fp(rd), 0);
+        }
+        Instr::FpToGen { dp: true, rd, rn } => {
+            c.movsd_load(0, Reg::R15, state::fp(rn));
+            c.movq_from_xmm(Reg::Rax, 0);
+            if rd != 31 {
+                c.mov_store(Reg::R15, state::x(rd), Reg::Rax);
+            }
+        }
+        Instr::GenToFp { dp: true, rd, rn } => {
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+            c.movq_to_xmm(0, Reg::Rax);
+            c.movsd_store(Reg::R15, state::fp(rd), 0);
+        }
+        Instr::FpLoadStore {
+            load,
+            size,
+            rt,
+            rn,
+            mode,
+        } => {
+            if size != 8 {
+                return Err(instr);
+            }
+            let (disp, writeback) = match mode {
+                AddressMode::Offset { imm } | AddressMode::Unscaled { imm } => (imm, None),
+                AddressMode::PreIndex { imm } => (imm, Some(imm)),
+                AddressMode::PostIndex { imm } => (0, Some(imm)),
+                _ => return Err(instr),
+            };
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+            c.mov_load(Reg::Rdx, Reg::R15, state::MEM_PTR);
+            c.add_reg(Reg::Rax, Reg::Rdx);
+            if disp != 0 {
+                c.add_imm(Reg::Rax, i32::try_from(disp).map_err(|_| instr)?);
+            }
+            if load {
+                c.movsd_load(0, Reg::Rax, 0);
+                c.movsd_store(Reg::R15, state::fp(rt), 0);
+            } else {
+                c.movsd_load(0, Reg::R15, state::fp(rt));
+                c.movsd_store(Reg::Rax, 0, 0);
+            }
+            if let Some(imm) = writeback {
+                c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+                c.add_imm(Reg::Rax, i32::try_from(imm).map_err(|_| instr)?);
+                c.mov_store(Reg::R15, state::x(rn), Reg::Rax);
+            }
+        }
         // Everything else is the driver's problem, not a silent no-op.
         _ => return Err(instr),
     }
@@ -952,11 +1051,13 @@ pub fn run_cached(
     // single largest cost in the benchmark, and entirely avoidable.
     let program = crate::block::scan(words);
 
-    for executed in 0..max_blocks {
+    let mut executed = 0u64;
+    while executed < max_blocks {
         let pc = state.pc as usize;
         if pc >= words.len() * 4 {
             return Ok(executed);
         }
+        executed += 1;
         let block = program
             .block_at(pc as i64)
             .ok_or_else(|| format!("no block at {pc:#x}"))?;
@@ -975,5 +1076,5 @@ pub fn run_cached(
         // No "did the pc move?" check: a self-branch (`cbnz x1, #-8` targeting its own block
         // start) legitimately returns to the same address. The block budget is the bound.
     }
-    Ok(max_blocks)
+    Ok(executed)
 }

@@ -408,6 +408,104 @@ impl Code {
         self.byte(amount);
     }
 
+    // -- scalar double-precision (SSE2) ------------------------------------
+
+    /// `movsd xmm, [base + disp]`.
+    pub fn movsd_load(&mut self, xmm: u8, base: Reg, disp: i32) {
+        assert!(base.low() != 4, "SIB base not supported");
+        self.byte(0xF2); // mandatory prefix, BEFORE any REX
+        self.sse_rex(xmm, base);
+        self.byte(0x0F);
+        self.byte(0x10);
+        self.modrm_disp(xmm & 7, base, disp);
+    }
+
+    /// `movsd [base + disp], xmm`.
+    pub fn movsd_store(&mut self, base: Reg, disp: i32, xmm: u8) {
+        assert!(base.low() != 4, "SIB base not supported");
+        self.byte(0xF2);
+        self.sse_rex(xmm, base);
+        self.push_bytes(&[0x0F, 0x11]);
+        self.modrm_disp(xmm & 7, base, disp);
+    }
+
+    /// `movsd xmm, xmm`.
+    pub fn movsd_reg(&mut self, dst: u8, src: u8) {
+        self.byte(0xF2);
+        self.sse_rex2(dst, src);
+        self.push_bytes(&[0x0F, 0x10]);
+        self.modrm(0b11, dst & 7, src & 7);
+    }
+
+    /// `addsd`/`subsd`/`mulsd`/`divsd xmm, xmm`.
+    pub fn sd_arith(&mut self, opcode: u8, dst: u8, src: u8) {
+        self.byte(0xF2);
+        self.sse_rex2(dst, src);
+        self.byte(0x0F);
+        self.byte(opcode);
+        self.modrm(0b11, dst & 7, src & 7);
+    }
+
+    /// `movq xmm, r64`.
+    ///
+    /// The 0x66 operand-size prefix is a *legacy* prefix and must come BEFORE the REX byte, and REX
+    /// does carry W here because the operand is 64-bit. Emitted the other way round it is a valid
+    /// instruction with a different meaning.
+    pub fn movq_to_xmm(&mut self, xmm: u8, gp: Reg) {
+        self.byte(0x66);
+        self.sse_rex_w(xmm, gp);
+        self.push_bytes(&[0x0F, 0x6E]);
+        self.modrm(0b11, xmm & 7, gp.low());
+    }
+
+    /// `movq r64, xmm`.
+    pub fn movq_from_xmm(&mut self, gp: Reg, xmm: u8) {
+        self.byte(0x66);
+        self.sse_rex_w(xmm, gp);
+        self.push_bytes(&[0x0F, 0x7E]);
+        self.modrm(0b11, xmm & 7, gp.low());
+    }
+
+    /// REX for a scalar-SSE instruction: no W bit, R for the XMM in `reg`, B for a general base.
+    fn sse_rex(&mut self, xmm: u8, base: Reg) {
+        let mut rex = 0x40;
+        if xmm >= 8 {
+            rex |= 0x04;
+        }
+        if base.high() {
+            rex |= 0x01;
+        }
+        if rex != 0x40 {
+            self.byte(rex);
+        }
+    }
+
+    /// REX for `xmm, xmm`: R for the destination, B for the source.
+    fn sse_rex2(&mut self, dst: u8, src: u8) {
+        let mut rex = 0x40;
+        if dst >= 8 {
+            rex |= 0x04;
+        }
+        if src >= 8 {
+            rex |= 0x01;
+        }
+        if rex != 0x40 {
+            self.byte(rex);
+        }
+    }
+
+    /// REX.W for the 64-bit `movq` forms.
+    fn sse_rex_w(&mut self, xmm: u8, gp: Reg) {
+        let mut rex = 0x48;
+        if xmm >= 8 {
+            rex |= 0x04;
+        }
+        if gp.high() {
+            rex |= 0x01;
+        }
+        self.byte(rex);
+    }
+
     // -- flags and conditionals --------------------------------------------
 
     /// `setcc r8`.
@@ -518,4 +616,10 @@ pub mod state {
     pub const MEM_PTR: i32 = FLAGS + 8;
     /// Guest memory length in bytes.
     pub const MEM_LEN: i32 = MEM_PTR + 8;
+    /// `V0..V31`, 16 bytes each.
+    pub const FP: i32 = MEM_LEN + 8;
+    /// Byte offset of floating-point register `n`.
+    pub const fn fp(n: u8) -> i32 {
+        FP + (n as i32) * 16
+    }
 }

@@ -874,7 +874,7 @@ fn apply_fp(a: f64, b: f64, op: FpOp) -> f64 {
 /// The exponent is `NOT(b) : b*(E-3) : c:d` and the fraction is `d:c...` zero-filled, which is why
 /// the encoding cannot be read as a small integer. Getting this wrong makes `fmov d0, #1.0` produce
 /// a denormal that looks like zero in most tests.
-fn vfp_expand_imm(imm8: u8, dp: bool) -> u64 {
+pub fn vfp_expand_imm(imm8: u8, dp: bool) -> u64 {
     let sign = u64::from((imm8 >> 7) & 1);
     let b = (imm8 >> 6) & 1;
     let exp_bits = if dp { 11 } else { 8 };
