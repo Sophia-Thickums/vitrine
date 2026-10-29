@@ -28,6 +28,8 @@ cache is damaged; repairing by truncation
 repair wrote 1 record(s)
 after append: status=0 records=2 envs=2
 OK
+select: chosen=2 rejected=2 warnings=0 truncated=0
+content selection OK
 ```
 
 A truncated cache keeps its good records, repairs to a valid file, and accepts a new pipeline.
@@ -38,6 +40,7 @@ The C++ code would have deleted all of it.
 | module | what it is |
 |---|---|
 | `cache` | read, validate, repair, append the Vulkan pipeline cache |
+| `content` | choose the winning update and DLC out of everything installed |
 | `env` | the serialized shader environment, field for field with `GenericEnvironment` |
 | `cursor` | bounds-checked little-endian reader; every short read is an `Err`, never a panic |
 | `ffi` | the C ABI in `include/vitrine.h` |
@@ -49,11 +52,29 @@ One deliberate difference in the bytes: the C++ writer emits `std::unordered_map
 unspecified order, so the same environment can serialize differently between runs. Vitrine uses
 `BTreeMap`, so its output is deterministic and can be checksummed. Readers of either accept both.
 
+### The second defect: which update actually loads
+
+`RegisteredCache::ProcessFiles` fills a `std::map<u64, CNMT>` with
+
+```cpp
+out_meta.insert_or_assign(title_id, std::move(cnmt));
+```
+
+keyed on the title id, which is identical at every version of a patch. So when two updates for one
+game are installed — the ordinary case — **whichever CNMT the directory walk reached last wins**,
+and directory order is filesystem order. The game boots on an arbitrary version.
+
+`content::select` takes every CNMT and returns one winner per title id by highest version, with
+every loser named and the reason attached. The result is permutation-invariant: shuffle the input
+and the same entry wins. Patches and DLC are separate slots from the base game, and an update or
+DLC whose base application is missing is retained and flagged rather than silently ignored.
+
+
 ## Building
 
 ```sh
 cargo build --release            # libvitrine.so and libvitrine.a
-cargo test --release             # 34 tests, zero failures
+cargo test --release             # 59 tests, zero failures
 ./cpp/build_cpp.sh               # builds the C++ integration check
 ./cpp/build_cpp.sh --static      # links the static archive instead
 ```
@@ -92,7 +113,7 @@ link that — `cpp/build_cpp.sh --static` shows the link line.
 ## What is not here yet, and why
 
 The other two places Rust genuinely pays for itself — the ARM64 JIT and the HLE service layer —
-are not in this crate. They are larger jobs and they need a booting core to be measured against.
+are not in this crate yet. They are larger jobs and they need a booting core to be measured against.
 This crate is deliberately the piece that can be finished, tested and merged on its own.
 
 ## Licence

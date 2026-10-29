@@ -32,6 +32,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod cache;
+pub mod content;
 pub mod cursor;
 pub mod env;
 pub mod ffi;
@@ -40,6 +41,7 @@ pub use cache::{
     CACHE_VERSION, Damage, DamageKind, KEY_LEN, MAGIC, MAX_ENVS, ParsedCache, Record, Repair,
     append_file, parse, parse_file, repair_file, serialize,
 };
+pub use content::{Entry, Rejected, Selection, TitleType, Warning, base_title_id, select};
 pub use env::{Environment, EnvParseError, Maps, Stage};
 
 /// The crate version, exposed to C++ for logging and for `hermes doctor`-style checks.

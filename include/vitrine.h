@@ -125,6 +125,71 @@ void vitrine_report_free(Report* report);
 /** Version string of the linked library, as a static NUL-terminated string. Never NULL. */
 const char* vitrine_version(void);
 
+/* -- content selection ---------------------------------------------------- */
+
+/** Title type discriminants, matching `TitleType` in `src/core/file_sys/cnmt.h`. */
+#define VITRINE_TYPE_APPLICATION 0x80
+#define VITRINE_TYPE_PATCH 0x81
+#define VITRINE_TYPE_ADD_ON_CONTENT 0x82
+#define VITRINE_TYPE_DELTA 0x83
+
+/** Reject reason: a higher version of the same title id was chosen. */
+#define VITRINE_REJECT_SUPERSEDED 0
+/** Reject reason: the identical content was installed twice. */
+#define VITRINE_REJECT_DUPLICATE 1
+
+/** Warning: a patch is installed but its base application is not. */
+#define VITRINE_WARN_ORPHAN_PATCH 0
+/** Warning: add-on content is installed but its base application is not. */
+#define VITRINE_WARN_ORPHAN_DLC 1
+
+/** One installed CNMT. */
+typedef struct CContentEntry {
+    unsigned long long title_id;
+    unsigned int version;
+    unsigned int title_type; /**< One of the VITRINE_TYPE_* values. */
+    unsigned long long source; /**< Caller's file identifier; returned untouched. */
+} CContentEntry;
+
+/** A rejected entry, why, and (for supersession) the version that won. */
+typedef struct CReject {
+    CContentEntry entry;
+    unsigned int reason;
+    unsigned int chosen_version;
+} CReject;
+
+/** A non-fatal problem worth logging. */
+typedef struct CWarning {
+    unsigned int kind; /**< One of the VITRINE_WARN_* values. */
+    unsigned long long title_id;
+    unsigned int version;
+} CWarning;
+
+/** What vitrine_content_select() produced. */
+typedef struct CSelectResult {
+    size_t chosen_count;   /**< True total, even when truncated. */
+    size_t rejected_count; /**< True total, even when truncated. */
+    size_t warning_count;  /**< True total, even when truncated. */
+    unsigned int truncated;/**< Non-zero when an output array was too small. */
+} CSelectResult;
+
+/**
+ * Choose one entry per title id: highest version wins, ties reported, nothing silently dropped.
+ *
+ * Replaces the `insert_or_assign` in RegisteredCache::ProcessFiles, where the winner was whichever
+ * CNMT the directory walk happened to reach last — so two installed updates for one game booted on
+ * an arbitrary version.
+ *
+ * Entries with an unknown `title_type` are skipped and not counted.
+ *
+ * @return number of chosen entries, or a negative error code.
+ */
+int vitrine_content_select(const CContentEntry* entries, size_t entry_count,
+                           CContentEntry* chosen, size_t chosen_cap,
+                           CReject* rejects, size_t reject_cap,
+                           CWarning* warnings, size_t warning_cap,
+                           CSelectResult* out);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

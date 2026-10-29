@@ -70,5 +70,38 @@ int main(int argc, char** argv) {
         return 1;
     }
     std::printf("OK\n");
+
+    // Content selection: three updates for one game, presented in the order a directory walk
+    // happened to produce. The newest must win regardless.
+    CContentEntry entries[4] = {
+        {0x0100000000010000ULL, 0, VITRINE_TYPE_APPLICATION, 1},
+        {0x0100000000010800ULL, 0x20000, VITRINE_TYPE_PATCH, 2},
+        {0x0100000000010800ULL, 0x30000, VITRINE_TYPE_PATCH, 3},
+        {0x0100000000010800ULL, 0x10000, VITRINE_TYPE_PATCH, 4},
+    };
+    CContentEntry chosen[8]{};
+    CReject rejects[8]{};
+    CWarning warnings[8]{};
+    CSelectResult sel{};
+
+    int chosen_count = vitrine_content_select(entries, 4, chosen, 8, rejects, 8, warnings, 8, &sel);
+    std::printf("select: chosen=%d rejected=%zu warnings=%zu truncated=%u\n",
+                chosen_count, sel.rejected_count, sel.warning_count, sel.truncated);
+
+    unsigned int patch_version = 0;
+    for (std::size_t i = 0; i < sel.chosen_count; ++i) {
+        if (chosen[i].title_type == VITRINE_TYPE_PATCH) {
+            patch_version = chosen[i].version;
+        }
+    }
+    if (patch_version != 0x30000) {
+        std::printf("FAIL: expected update 0x30000, got 0x%X\n", patch_version);
+        return 1;
+    }
+    if (sel.rejected_count != 2) {
+        std::printf("FAIL: expected 2 superseded updates, got %zu\n", sel.rejected_count);
+        return 1;
+    }
+    std::printf("content selection OK\n");
     return 0;
 }

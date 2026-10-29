@@ -208,3 +208,169 @@ fn an_empty_report_has_no_handle() {
     };
     assert!(r.handle.is_null());
 }
+
+// -- content selection over the C ABI --------------------------------------
+
+use vitrine::ffi::{
+    CContentEntry, CReject, CSelectResult, CWarning, VITRINE_REJECT_SUPERSEDED,
+    VITRINE_TYPE_APPLICATION, VITRINE_TYPE_PATCH, VITRINE_WARN_ORPHAN_DLC,
+    VITRINE_TYPE_ADD_ON_CONTENT, vitrine_content_select,
+};
+
+const BASE: u64 = 0x0100_0000_0001_0000;
+const PATCH: u64 = BASE + 0x800;
+
+#[test]
+fn selection_through_the_abi_picks_the_highest_version() {
+    let entries = [
+        CContentEntry { title_id: BASE, version: 0, title_type: VITRINE_TYPE_APPLICATION, source: 1 },
+        CContentEntry { title_id: PATCH, version: 0x20000, title_type: VITRINE_TYPE_PATCH, source: 2 },
+        CContentEntry { title_id: PATCH, version: 0x30000, title_type: VITRINE_TYPE_PATCH, source: 3 },
+    ];
+    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 8];
+    let mut rejects = Vec::<CReject>::new();
+    let mut warnings = Vec::<CWarning>::new();
+    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+
+    // SAFETY: entries is live; the output arrays have the capacities passed.
+    let n = unsafe {
+        vitrine_content_select(
+            entries.as_ptr(), entries.len(),
+            chosen.as_mut_ptr(), chosen.len(),
+            rejects.as_mut_ptr(), 0,
+            warnings.as_mut_ptr(), 0,
+            &mut out,
+        )
+    };
+    assert_eq!(n, 2);
+    assert_eq!(out.chosen_count, 2);
+    assert_eq!(out.rejected_count, 1, "the older patch is superseded");
+    assert_eq!(out.truncated, 1, "zero-cap rejects array must report truncation");
+
+    let patch = chosen
+        .iter()
+        .find(|e| e.title_type == VITRINE_TYPE_PATCH)
+        .expect("a patch must be chosen");
+    assert_eq!(patch.version, 0x30000);
+}
+
+#[test]
+fn title_type_crosses_the_boundary_as_the_cnmt_byte_not_a_variant_index() {
+    // Regression test for a real bug: `enum as u32` yields 0..=3, not 0x80..=0x83, so the C side
+    // saw every entry as unknown and selection silently returned nothing.
+    let entries = [
+        CContentEntry { title_id: BASE, version: 0, title_type: VITRINE_TYPE_APPLICATION, source: 1 },
+        CContentEntry { title_id: PATCH, version: 5, title_type: VITRINE_TYPE_PATCH, source: 2 },
+    ];
+    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 4];
+    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut rej = Vec::<CReject>::new();
+    let mut warn = Vec::<CWarning>::new();
+    // SAFETY: entries live; outputs sized.
+    let n = unsafe {
+        vitrine_content_select(
+            entries.as_ptr(), entries.len(),
+            chosen.as_mut_ptr(), chosen.len(),
+            rej.as_mut_ptr(), 0,
+            warn.as_mut_ptr(), 0,
+            &mut out,
+        )
+    };
+    assert_eq!(n, 2, "both entries must be recognisable");
+    let types: Vec<u32> = chosen[..out.chosen_count].iter().map(|e| e.title_type).collect();
+    assert!(types.contains(&0x80), "application byte must survive: {types:?}");
+    assert!(types.contains(&0x81), "patch byte must survive: {types:?}");
+}
+
+#[test]
+fn rejects_carry_the_version_that_won() {
+    let entries = [
+        CContentEntry { title_id: PATCH, version: 0x10000, title_type: VITRINE_TYPE_PATCH, source: 1 },
+        CContentEntry { title_id: PATCH, version: 0x90000, title_type: VITRINE_TYPE_PATCH, source: 2 },
+    ];
+    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 4];
+    let mut rejects = vec![CReject {
+        entry: CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 },
+        reason: 99,
+        chosen_version: 0,
+    }; 4];
+    let mut warnings = Vec::<CWarning>::new();
+    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    // SAFETY: all arrays live with the stated capacities.
+    unsafe {
+        vitrine_content_select(
+            entries.as_ptr(), entries.len(),
+            chosen.as_mut_ptr(), chosen.len(),
+            rejects.as_mut_ptr(), rejects.len(),
+            warnings.as_mut_ptr(), 0,
+            &mut out,
+        )
+    };
+    assert_eq!(out.rejected_count, 1);
+    assert_eq!(rejects[0].reason, VITRINE_REJECT_SUPERSEDED);
+    assert_eq!(rejects[0].chosen_version, 0x90000);
+}
+
+#[test]
+fn orphan_dlc_warning_crosses_the_abi() {
+    let dlc = BASE + 0x1000;
+    let entries = [CContentEntry {
+        title_id: dlc,
+        version: 0,
+        title_type: VITRINE_TYPE_ADD_ON_CONTENT,
+        source: 7,
+    }];
+    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 2];
+    let mut rejects = Vec::<CReject>::new();
+    let mut warnings = vec![CWarning { kind: 99, title_id: 0, version: 0 }; 2];
+    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    // SAFETY: all arrays live with the stated capacities.
+    unsafe {
+        vitrine_content_select(
+            entries.as_ptr(), entries.len(),
+            chosen.as_mut_ptr(), chosen.len(),
+            rejects.as_mut_ptr(), 0,
+            warnings.as_mut_ptr(), warnings.len(),
+            &mut out,
+        )
+    };
+    assert_eq!(out.warning_count, 1);
+    assert_eq!(warnings[0].kind, VITRINE_WARN_ORPHAN_DLC);
+    assert_eq!(warnings[0].title_id, dlc);
+}
+
+#[test]
+fn selection_rejects_null_pointers() {
+    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    // SAFETY: null entries is documented as an error, not a crash.
+    let code = unsafe {
+        vitrine_content_select(
+            std::ptr::null(), 1,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            &mut out,
+        )
+    };
+    assert_eq!(code, vitrine::ffi::VITRINE_ERR_BAD_ARGUMENT);
+}
+
+#[test]
+fn selection_of_nothing_is_zero_and_clean() {
+    let mut out = CSelectResult { chosen_count: 9, rejected_count: 9, warning_count: 9, truncated: 9 };
+    // SAFETY: a null entries pointer with count 0 is rejected by the null check, so pass a real one.
+    let empty: [CContentEntry; 0] = [];
+    let code = unsafe {
+        vitrine_content_select(
+            empty.as_ptr(), 0,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(), 0,
+            &mut out,
+        )
+    };
+    assert_eq!(code, 0);
+    assert_eq!(out.chosen_count, 0);
+    assert_eq!(out.rejected_count, 0);
+    assert_eq!(out.truncated, 0);
+}

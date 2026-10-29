@@ -329,3 +329,210 @@ pub extern "C" fn vitrine_version() -> *const c_char {
     static VERSION_C: &[u8] = concat!(env!("CARGO_PKG_VERSION"), "\0").as_bytes();
     VERSION_C.as_ptr().cast()
 }
+
+// ---------------------------------------------------------------------------
+// Content selection
+// ---------------------------------------------------------------------------
+
+/// `TitleType` byte for an application, as it appears in a CNMT header.
+pub const VITRINE_TYPE_APPLICATION: u32 = 0x80;
+/// `TitleType` byte for a patch.
+pub const VITRINE_TYPE_PATCH: u32 = 0x81;
+/// `TitleType` byte for add-on content.
+pub const VITRINE_TYPE_ADD_ON_CONTENT: u32 = 0x82;
+/// `TitleType` byte for a delta fragment.
+pub const VITRINE_TYPE_DELTA: u32 = 0x83;
+
+/// One installed CNMT, as the C++ filesystem layer knows it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CContentEntry {
+    /// Title id the CNMT names.
+    pub title_id: u64,
+    /// Version the CNMT declares.
+    pub version: u32,
+    /// `TitleType`: 0x80 Application, 0x81 Patch, 0x82 AddOnContent, 0x83 Delta.
+    pub title_type: u32,
+    /// Caller's stable identifier for the underlying file; carried through untouched.
+    pub source: u64,
+}
+
+impl CContentEntry {
+    fn as_entry(self) -> Option<content::Entry> {
+        let title_type = u8::try_from(self.title_type).ok().and_then(TitleType::from_u8)?;
+        Some(content::Entry {
+            title_id: self.title_id,
+            version: self.version,
+            title_type,
+            source: self.source,
+        })
+    }
+
+    fn from_entry(e: &content::Entry) -> Self {
+        Self {
+            title_id: e.title_id,
+            version: e.version,
+            title_type: u32::from(e.title_type.to_u8()),
+            source: e.source,
+        }
+    }
+}
+
+/// Why an entry was not chosen, in the C ABI.
+///
+/// `reason`: 0 = superseded (see `chosen_version`), 1 = duplicate, 2 = unknown title type.
+pub const VITRINE_REJECT_SUPERSEDED: u32 = 0;
+/// See [`VITRINE_REJECT_SUPERSEDED`].
+pub const VITRINE_REJECT_DUPLICATE: u32 = 1;
+
+/// One rejected entry and the reason.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CReject {
+    pub entry: CContentEntry,
+    /// `VITRINE_REJECT_SUPERSEDED` or `VITRINE_REJECT_DUPLICATE`.
+    pub reason: u32,
+    /// Version that beat this entry; 0 when `reason` is not superseded.
+    pub chosen_version: u32,
+}
+
+/// `kind` for [`CWarning`]: a patch with no base application installed.
+pub const VITRINE_WARN_ORPHAN_PATCH: u32 = 0;
+/// `kind` for [`CWarning`]: add-on content with no base application installed.
+pub const VITRINE_WARN_ORPHAN_DLC: u32 = 1;
+
+/// A non-fatal problem worth logging.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CWarning {
+    pub kind: u32,
+    pub title_id: u64,
+    pub version: u32,
+}
+
+/// Filled by [`vitrine_content_select`] to describe what it produced.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CSelectResult {
+    /// Number of chosen entries written.
+    pub chosen_count: usize,
+    /// Number of rejects written.
+    pub rejected_count: usize,
+    /// Number of warnings written.
+    pub warning_count: usize,
+    /// Non-zero when a caller-provided array was too small; the counts above are then the true
+    /// totals and only the first `*_cap` of each were written.
+    pub truncated: u32,
+}
+
+/// Select the winning content out of everything installed.
+///
+/// Writes up to `chosen_cap` choices, `reject_cap` rejects and `warning_cap` warnings into the
+/// caller's arrays, and reports the true totals in `out` so a caller can re-call with bigger
+/// arrays. Entries whose `title_type` is not a known `TitleType` are skipped silently: the caller
+/// enumerated something that is not content, which is not this function's problem to report.
+///
+/// Returns the number of chosen entries, or a negative error code.
+///
+/// # Safety
+///
+/// `entries` must point to `entry_count` live [`CContentEntry`] values. `out` must be a live
+/// [`CSelectResult`]. Each output array must either be null (with its cap zero) or point to at
+/// least its stated capacity of the corresponding element type.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_content_select(
+    entries: *const CContentEntry,
+    entry_count: usize,
+    chosen: *mut CContentEntry,
+    chosen_cap: usize,
+    rejects: *mut CReject,
+    reject_cap: usize,
+    warnings: *mut CWarning,
+    warning_cap: usize,
+    out: *mut CSelectResult,
+) -> c_int {
+    match catch_unwind(AssertUnwindSafe(|| {
+        if entries.is_null() || out.is_null() {
+            return VITRINE_ERR_BAD_ARGUMENT;
+        }
+        if (chosen.is_null() && chosen_cap != 0) || (rejects.is_null() && reject_cap != 0) {
+            return VITRINE_ERR_BAD_ARGUMENT;
+        }
+        if warnings.is_null() && warning_cap != 0 {
+            return VITRINE_ERR_BAD_ARGUMENT;
+        }
+        // SAFETY: caller guarantees `entries` holds `entry_count` values.
+        let slice = unsafe { std::slice::from_raw_parts(entries, entry_count) };
+        let selection = content::select(slice.iter().filter_map(|e| e.as_entry()));
+
+        let chosen_vec: Vec<&content::Entry> = selection.chosen.values().collect();
+        let mut truncated = 0u32;
+        for (i, entry) in chosen_vec.iter().enumerate() {
+            if i < chosen_cap {
+                // SAFETY: caller guarantees `chosen` holds `chosen_cap` values when non-null.
+                unsafe { chosen.add(i).write(CContentEntry::from_entry(entry)) };
+            } else {
+                truncated = 1;
+            }
+        }
+        for (i, (entry, reason)) in selection.rejected.iter().enumerate() {
+            if i >= reject_cap {
+                truncated = 1;
+                break;
+            }
+            let (code, chosen_version) = match reason {
+                content::Rejected::Superseded { chosen_version } => {
+                    (VITRINE_REJECT_SUPERSEDED, *chosen_version)
+                }
+                content::Rejected::Duplicate => (VITRINE_REJECT_DUPLICATE, 0),
+                content::Rejected::UnknownType { .. } => (VITRINE_REJECT_DUPLICATE, 0),
+            };
+            // SAFETY: caller guarantees `rejects` holds `reject_cap` values when non-null.
+            unsafe {
+                rejects.add(i).write(CReject {
+                    entry: CContentEntry::from_entry(entry),
+                    reason: code,
+                    chosen_version,
+                })
+            };
+        }
+        for (i, warning) in selection.warnings.iter().enumerate() {
+            if i >= warning_cap {
+                truncated = 1;
+                break;
+            }
+            let (kind, title_id, version) = match warning {
+                content::Warning::OrphanPatch { title_id, version } => {
+                    (VITRINE_WARN_ORPHAN_PATCH, *title_id, *version)
+                }
+                content::Warning::OrphanDlc { title_id, version } => {
+                    (VITRINE_WARN_ORPHAN_DLC, *title_id, *version)
+                }
+            };
+            // SAFETY: caller guarantees `warnings` holds `warning_cap` values when non-null.
+            unsafe {
+                warnings.add(i).write(CWarning {
+                    kind,
+                    title_id,
+                    version,
+                })
+            };
+        }
+        // SAFETY: caller guarantees `out` is a live CSelectResult.
+        unsafe {
+            out.write(CSelectResult {
+                chosen_count: selection.chosen.len(),
+                rejected_count: selection.rejected.len(),
+                warning_count: selection.warnings.len(),
+                truncated,
+            })
+        };
+        selection.chosen.len() as c_int
+    })) {
+        Ok(code) => code,
+        Err(_) => VITRINE_ERR_PANIC,
+    }
+}
+
+use crate::content::{self, TitleType};
+
