@@ -285,3 +285,55 @@ fn a_pair_access_straddling_the_end_aborts_on_the_second_half() {
         "in-bounds pair must not abort"
     );
 }
+
+// ── the local model's audit, turned into evidence rather than opinion ────────────────────────────
+
+#[test]
+fn a_wrapping_access_address_is_caught_by_the_below_window_check() {
+    // Claim from a local-model review: `rcx = rax + size-1` can wrap when rax is near u64::MAX and
+    // bypass the upper-bound test. The reasoning omitted the FIRST compare, which is a below-window
+    // check — and a wrapped address lands BELOW the base, where `jb` catches it. Proved, not argued:
+    // mem_ptr is set 4 bytes below the top of the address space, so base + 8 wraps to 3.
+    let words: &'static [u32] = &[0xF940_0020, 0xD65F_03C0]; // ldr x0, [x1] ; ret
+    let mut state = JitState::new(u64::MAX - 4, 64);
+    state.pc = 0;
+    state.x[1] = 8;
+
+    let mut jit = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), state);
+    jit.run(4).expect("driver returns rather than dying");
+
+    assert_eq!(
+        jit.state().last_exit,
+        jit::Exit::DataAbort as u64,
+        "a wrapped address must abort; the below-window compare is what catches it"
+    );
+    assert_eq!(jit.state().pc, 0, "and pc stays on the faulting instruction");
+}
+
+#[test]
+fn the_last_byte_of_the_window_is_in_bounds_and_one_past_it_is_not() {
+    // The second local-model claim was that `jae` against `mem_ptr + mem_len` is off by one. It is a
+    // half-open window: the last readable byte is `mem_len-1`, and a load whose LAST byte is at
+    // `mem_len-1` must succeed while one that reaches `mem_len` must abort. Both arms here.
+    let words: &'static [u32] = &[0xF940_0020, 0xD65F_03C0]; // ldr x0, [x1] ; ret
+
+    // ★ mem_ptr must be a REAL mapping: the guard bounds-checks the window, it does not verify that
+    // the window is host memory. A fabricated base makes the in-bounds arm dereference whatever the
+    // number points at — this test segfaulted with mem_ptr = 0, which is exactly what a caller of the
+    // C ABI would do if it passed a stale pointer.
+    let window = [0u8; 64];
+    let base = window.as_ptr() as u64;
+    let mut ok_state = JitState::new(base, 64);
+    ok_state.pc = 0;
+    ok_state.x[1] = 56; // bytes 56..63 -> last byte 63, inside a 64-byte window
+    let mut jit = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), ok_state);
+    jit.run(4).expect("runs");
+    assert_ne!(jit.state().last_exit, jit::Exit::DataAbort as u64, "last byte inside must load");
+
+    let mut bad_state = JitState::new(base, 64);
+    bad_state.pc = 0;
+    bad_state.x[1] = 57; // bytes 57..64 -> last byte 64, one past the window
+    let mut jit2 = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), bad_state);
+    jit2.run(4).expect("returns");
+    assert_eq!(jit2.state().last_exit, jit::Exit::DataAbort as u64, "one byte past must abort");
+}

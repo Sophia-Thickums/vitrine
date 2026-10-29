@@ -52,3 +52,20 @@ Two defects were found by these checks and fixed here rather than in the emulato
   Dynarmic.
 - **TPIDRRO_EL0 is held out of band** — generated code does not read it yet, and a field no emitted
   instruction consumes would be a claim about what is implemented.
+
+## ★ THE ADAPTER HAS NO DATA WINDOW YET (2026-10-29)
+
+`ArmVitrine64` builds its state with `vitrine_jit_new_default()`, which leaves `mem_ptr = 0` and
+`mem_len = 0`. The generated guard therefore refuses **every** guest load and store with `DataAbort`,
+which is the safe failure — it cannot read or write host memory — but it also means no guest data access
+works, so this backend cannot yet run a program that touches memory.
+
+Wiring it needs one decision, and it is Citron's to make because its RAM is a sparse page table with two
+attribute bits packed into each entry: either pass a real flat window covering the pages in play, or move
+data access onto the same fallible reader the instruction fetch already uses. **A fabricated `mem_ptr` is
+not an error the guard can catch** — the bounds check proves an address is inside the window, not that the
+window is host memory, and a test here segfaulted doing exactly that with a base of 0.
+
+Also note `RunThread` currently checks `r.status` and maps a refusal to `BreakLoop`; once a window exists,
+a guest `DataAbort` should reach the kernel as `HaltReason::DataAbort` so the page can be mapped and the
+instruction retried.
