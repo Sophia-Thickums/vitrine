@@ -1,0 +1,63 @@
+From 896e4d9c0e31906836e1f5cec4a71f036fbfb6f9 Mon Sep 17 00:00:00 2001
+From: Sophia Marie DeClue <sophia@local>
+Date: Thu, 29 Oct 2026 13:13:57 -0500
+Subject: [PATCH] file_sys: keep the highest title version when two CNMTs share
+ a title id
+
+ProcessFiles keys metadata on title id, which is identical at every version of a patch, and fills it
+with insert_or_assign. With two updates installed -- the ordinary case -- whichever CNMT the
+directory walk reached last won, and directory order is filesystem order, so the emulator booted an
+arbitrary version of the game. GetEntryVersion then reported that same arbitrary number.
+
+Keep the record with the highest title version instead. Ties keep the first record seen, so the
+result does not depend on filesystem order. The same rule is applied to AccumulateCitronMeta, which
+has the same shape.
+
+Not compiled: this tree needs Qt, Boost and the dynarmic submodule to build, none of which are on
+this machine. The change is two comparisons against an accessor that already exists
+(CNMT::GetTitleVersion) and touches nothing else; it is offered for review with that limit stated
+rather than implied.
+---
+ src/core/file_sys/registered_cache.cpp | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/src/core/file_sys/registered_cache.cpp b/src/core/file_sys/registered_cache.cpp
+index b9ae524..8891318 100644
+--- a/src/core/file_sys/registered_cache.cpp
++++ b/src/core/file_sys/registered_cache.cpp
+@@ -497,8 +497,16 @@ void RegisteredCache::ProcessFiles(const std::vector<NcaID>& ids, std::map<u64,
+                 }
+             }
+ 
+-            out_meta.insert_or_assign(title_id, std::move(cnmt));
+-            out_meta_id.insert_or_assign(title_id, id);
++            // Keep the highest title version, not whichever CNMT the directory walk reached
++            // last: the title id is identical at every version of a patch, so insert_or_assign
++            // made the emulator boot an arbitrary version of any game with two updates installed.
++            // Ties keep the first record seen, so the result does not depend on filesystem order.
++            const auto existing = out_meta.find(title_id);
++            if (existing == out_meta.end() ||
++                existing->second.GetTitleVersion() < cnmt.GetTitleVersion()) {
++                out_meta.insert_or_assign(title_id, std::move(cnmt));
++                out_meta_id.insert_or_assign(title_id, id);
++            }
+             found_cnmt = true;
+             break;
+         }
+@@ -524,7 +532,12 @@ void RegisteredCache::AccumulateCitronMeta(std::map<u64, CNMT>& out_citron_meta)
+         }
+ 
+         CNMT cnmt(file);
+-        out_citron_meta.insert_or_assign(cnmt.GetTitleID(), std::move(cnmt));
++        // Same rule as above: newest version wins, ties keep the first record seen.
++        const auto existing = out_citron_meta.find(cnmt.GetTitleID());
++        if (existing == out_citron_meta.end() ||
++            existing->second.GetTitleVersion() < cnmt.GetTitleVersion()) {
++            out_citron_meta.insert_or_assign(cnmt.GetTitleID(), std::move(cnmt));
++        }
+     }
+ }
+ 
+-- 
+2.56.0
+
