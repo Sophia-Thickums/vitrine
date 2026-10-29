@@ -136,6 +136,21 @@ The other two places Rust genuinely pays for itself — the ARM64 JIT and the HL
 are not in this crate yet. They are larger jobs and they need a booting core to be measured against.
 This crate is deliberately the piece that can be finished, tested and merged on its own.
 
+## Status
+
+This is a working core, not a finished emulator. What that means concretely:
+
+- **Decoder** — 100% of instructions in four clang-generated `.text` blobs (`-O0`, `-O2`, `-Os`),
+  and 46/46 in a hand-checked corpus. SIMD/NEON, atomics and pointer authentication are **not**
+  decoded.
+- **Interpreter** — executes integer, branch, load/store, bitfield and scalar-double instructions.
+  Agrees with `qemu-aarch64` on 18 programs. Single-precision forms are refused.
+- **Compiler** — emits x86-64 for the same set, agrees with the interpreter including the FP
+  register file, and is 1.87x faster on a loop. On a straight-line block that runs once it is
+  *slower* (0.53x), because the driver's per-entry work dominates.
+- **Not present** — MMU/TLB, memory protection, system registers, HLE services, a Vulkan backend,
+  thread scheduling. The memory model is one flat array.
+
 ## Licence
 
 GPL-3.0-or-later, matching Citron Neo. A GPL project may link this crate. A permissively-licensed
