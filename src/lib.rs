@@ -33,6 +33,7 @@
 
 pub mod a64;
 pub mod block;
+pub mod interp;
 pub mod cache;
 pub mod content;
 pub mod cursor;
