@@ -175,3 +175,63 @@ fn compiled_floating_point_agrees_with_the_interpreter() {
         assert_eq!(state.fp, interp.fp, "{name}: FP register file differs");
     }
 }
+
+// ── the data-abort guard: the thing that makes this JIT safe on a real guest ─────────────────────
+
+#[test]
+fn a_load_past_the_end_of_the_window_aborts_instead_of_reading_host_memory() {
+    // ldr x0, [x1]  ; ret        — x1 is set to the last 4 bytes of the window, so the 8-byte load
+    // straddles the end. Before the guard existed this read host memory past the allocation and
+    // returned whatever was there.
+    let program: &'static [u32] = &[0xF940_0020, 0xD65F_03C0];
+    let mut memory = vec![0u8; 64];
+
+    let mut state = JitState::new(0, 0);
+    state.x[1] = 60; // 60..68 in a 64-byte window
+    jit::run(program, &mut memory, &mut state, 8).expect("driver returns rather than dying");
+
+    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64, "last exit is a data abort");
+    assert_eq!(state.pc, 0, "pc points at the faulting instruction, so it can be retried");
+    let base = memory.as_ptr() as u64;
+    assert_eq!(state.fault_addr, base + 60, "the faulting host address is recorded");
+}
+
+#[test]
+fn a_load_entirely_inside_the_window_still_runs() {
+    // The same program with the load in bounds must not abort: a guard that refuses everything is
+    // not a guard.
+    let program: &'static [u32] = &[0xF940_0020, 0xD65F_03C0];
+    let mut memory = vec![0u8; 64];
+    let mut state = JitState::new(0, 0);
+    state.x[1] = 0;
+    state.x[0] = 0;
+    jit::run(program, &mut memory, &mut state, 8).expect("runs");
+
+    assert_ne!(state.last_exit, jit::Exit::DataAbort as u64, "in-bounds access must not abort");
+}
+
+#[test]
+fn a_pair_access_straddling_the_end_aborts_on_the_second_half() {
+    // ldp x0, x1, [x2]  ; ret      (encoding from llvm-mc, not from memory)
+    // A pair reads 8+8 bytes at [x2] and [x2+8]. With x2 = 56 in a 64-byte window, the FIRST half
+    // lands and the SECOND does not — so the guard has to cover the whole span, not one element.
+    // This is the arm a reviewer questioned: it settles by measurement whether size*2 is the right
+    // span, rather than by either of us arguing.
+    let program: &'static [u32] = &[0xA940_0440, 0xD65F_03C0];
+    let mut memory = vec![0u8; 64];
+
+    let mut state = JitState::new(0, 0);
+    state.x[2] = 56;
+    jit::run(program, &mut memory, &mut state, 8).expect("driver returns");
+
+    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64,
+        "the second half of the pair is past the window, so the pair must abort");
+    assert_eq!(state.fault_addr, memory.as_ptr() as u64 + 56,
+        "the faulting address is the base of the pair");
+
+    // And the same pair fully in bounds still runs.
+    let mut state2 = JitState::new(0, 0);
+    state2.x[2] = 40;
+    jit::run(program, &mut memory, &mut state2, 8).expect("driver returns");
+    assert_ne!(state2.last_exit, jit::Exit::DataAbort as u64, "in-bounds pair must not abort");
+}

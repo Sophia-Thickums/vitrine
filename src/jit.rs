@@ -38,6 +38,14 @@ pub enum Exit {
     SupervisorCall = 2,
     /// An instruction this translator does not emit.
     Unsupported = 3,
+    /// A guest memory access left the window; `pc` points at the faulting instruction and
+    /// [`JitState::fault_addr`] holds the address it tried to reach.
+    ///
+    /// Before this existed, generated code performed every access with no check at all — `mem_len`
+    /// was written by the driver and read by nobody — so a guest address outside the window read or
+    /// wrote host memory. For a benchmark that never happened; for an emulator it is the first
+    /// unmapped page.
+    DataAbort = 4,
 }
 
 /// The state block generated code operates on.
@@ -61,6 +69,15 @@ pub struct JitState {
     pub mem_len: u64,
     /// `V0..V31`, 16 bytes each.
     pub fp: [[u8; 16]; 32],
+    /// Guest address of the faulting access, set only on [`Exit::DataAbort`].
+    ///
+    /// Appended at the end deliberately: every field above keeps the offset it had, because
+    /// `state_layout_is_stable` pins those offsets and the generated code hard-codes them.
+    pub fault_addr: u64,
+    /// Why the driver last stopped, as an [`Exit`] discriminant. Written by the driver, not by
+    /// generated code — a fault stub cannot write it without a second store on the hot path, and
+    /// the driver knows the exit code the moment the block returns.
+    pub last_exit: u64,
 }
 
 impl JitState {
@@ -75,6 +92,8 @@ impl JitState {
             mem_ptr,
             mem_len,
             fp: [[0; 16]; 32],
+            fault_addr: 0,
+            last_exit: 0,
         }
     }
 
@@ -115,6 +134,63 @@ pub fn compile(block: &Block) -> Result<Vec<u8>, Instr> {
     epilogue(&mut c, block.end, Exit::Next);
 
     Ok(c.finish())
+}
+
+
+/// Labels for the data-abort stub guarding the instruction at `offset`.
+///
+/// Derived from the instruction's address rather than from a counter, so `emit` stays a pure
+/// function of its arguments: two instructions in one block never share an address, so the ids
+/// never collide and no state has to be threaded through the emitter.
+fn fault_labels(offset: i64) -> (usize, usize) {
+    let base = ((offset.max(0) as usize) / 4) * 2;
+    (base, base + 1)
+}
+
+/// Guard the access whose host address is now in `rax`.
+///
+/// The access is allowed only if **every byte of it** lies inside `[mem_ptr, mem_ptr + mem_len)`.
+/// Before this existed nothing checked at all: `mem_len` was written by the driver and read by
+/// nobody, so a guest address outside the window read or wrote host memory. A benchmark never went
+/// out of bounds, which is why it went unnoticed; an emulator hits it on the first unmapped page.
+///
+/// Emitted shape — check, then jump over a fault stub:
+///
+/// ```text
+///   rcx = rax + (size-1)        ; last byte touched
+///   cmp rcx, mem_ptr            ; jb  -> fault   (below the window)
+///   cmp rcx, mem_ptr + mem_len  ; jae -> fault   (at or past the end)
+///   jmp access
+/// fault:
+///   fault_addr = rax
+///   pc = <this instruction>; return DataAbort
+/// access:
+/// ```
+///
+/// Register use is `rcx`, `rdx`, `rsi` — all caller-saved. Every call site loads the value operand
+/// into `rsi` (or an xmm register) *after* the address is formed, so none of these three is live
+/// across the guard. That invariant is why the guard can be inline instead of around a call, and it
+/// is the thing to re-check if a future instruction is added that keeps a value in `rsi`.
+fn mem_guard(c: &mut Code, size: i32, offset: i64) {
+    let (fault, access) = fault_labels(offset);
+
+    c.mov_reg(Reg::Rcx, Reg::Rax);
+    if size > 1 {
+        c.add_imm(Reg::Rcx, size - 1);
+    }
+    c.mov_load(Reg::Rdx, Reg::R15, state::MEM_PTR);
+    c.cmp_reg(Reg::Rcx, Reg::Rdx);
+    c.jcc(Cc::B, fault);
+    c.mov_load(Reg::Rsi, Reg::R15, state::MEM_LEN);
+    c.add_reg(Reg::Rdx, Reg::Rsi);
+    c.cmp_reg(Reg::Rcx, Reg::Rdx);
+    c.jcc(Cc::Ae, fault);
+    c.jmp(access);
+    c.label(fault);
+    // Store the faulting address BEFORE the epilogue, which clobbers rax with the pc.
+    c.mov_store(Reg::R15, state::FAULT_ADDR, Reg::Rax);
+    epilogue(c, offset, Exit::DataAbort);
+    c.label(access);
 }
 
 fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
@@ -498,6 +574,7 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             if disp != 0 {
                 c.add_imm(Reg::Rax, i32::try_from(disp).map_err(|_| instr)?);
             }
+            mem_guard(c, size as i32, offset);
             if load {
                 let tmp = Reg::Rsi;
                 match (size, signed) {
@@ -629,6 +706,7 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             if disp != 0 {
                 c.add_imm(Reg::Rax, i32::try_from(disp).map_err(|_| instr)?);
             }
+            mem_guard(c, size as i32 * 2, offset);
             let second = i32::from(size);
             if load {
                 c.mov_load(Reg::Rsi, Reg::Rax, 0);
@@ -734,6 +812,7 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             if disp != 0 {
                 c.add_imm(Reg::Rax, i32::try_from(disp).map_err(|_| instr)?);
             }
+            mem_guard(c, 8, offset);
             if load {
                 c.movsd_load(0, Reg::Rax, 0);
                 c.movsd_store(Reg::R15, state::fp(rt), 0);
@@ -1069,7 +1148,14 @@ pub fn run_cached(
         let exit = f(state);
         match exit {
             x if x == Exit::Next as u64 || x == Exit::Jumped as u64 => {}
-            x if x == Exit::SupervisorCall as u64 => return Ok(executed),
+            x if x == Exit::SupervisorCall as u64 => {
+                state.last_exit = x;
+                return Ok(executed);
+            }
+            x if x == Exit::DataAbort as u64 => {
+                state.last_exit = x;
+                return Ok(executed);
+            }
             x if x == Exit::Unsupported as u64 => return Err("unsupported instruction".into()),
             other => return Err(format!("bad exit code {other}")),
         }

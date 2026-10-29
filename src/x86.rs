@@ -622,4 +622,6 @@ pub mod state {
     pub const fn fp(n: u8) -> i32 {
         FP + (n as i32) * 16
     }
+    /// Guest address of a faulting access, written by the data-abort stub. Last field in the block.
+    pub const FAULT_ADDR: i32 = FP + 32 * 16;
 }
