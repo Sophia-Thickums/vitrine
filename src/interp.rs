@@ -110,11 +110,27 @@ impl Machine {
         Ok(())
     }
 
+    /// Read a general register. **Register 31 reads as zero here** — that is XZR, and it is the
+    /// right default: only `ADD`/`SUB` immediate and a load/store base treat 31 as SP, and those
+    /// go through [`Machine::get_sp`].
     fn get(&self, r: u8) -> u64 {
+        if r == 31 { 0 } else { self.x[r as usize] }
+    }
+
+    /// Write a general register; a write to 31 is discarded (XZR).
+    fn set(&mut self, r: u8, value: u64) {
+        if r != 31 {
+            self.x[r as usize] = value;
+        }
+    }
+
+    /// Read a register where 31 means SP.
+    fn get_sp(&self, r: u8) -> u64 {
         if r == 31 { self.sp } else { self.x[r as usize] }
     }
 
-    fn set(&mut self, r: u8, value: u64) {
+    /// Write a register where 31 means SP.
+    fn set_sp(&mut self, r: u8, value: u64) {
         if r == 31 {
             self.sp = value;
         } else {
@@ -267,13 +283,17 @@ impl Machine {
                 lsl12,
             } => {
                 let imm = u64::from(imm) << if lsl12 { 12 } else { 0 };
-                let a = self.get_sized(rn, sf);
+                // ADD/SUB immediate is one of the few encodings where 31 means SP.
+                let a = if sf { self.get_sp(rn) } else { self.get_sp(rn) & 0xFFFF_FFFF };
                 let (result, carry, overflow) = if sub {
                     add_with_carry(a, !imm, 1, sf)
                 } else {
                     add_with_carry(a, imm, 0, sf)
                 };
-                self.set_sized(rd, sf, result);
+                if !set_flags || rd != 31 {
+                    let v = if sf { result } else { result & 0xFFFF_FFFF };
+                    self.set_sp(rd, v);
+                }
                 if set_flags {
                     self.set_flags(result, carry, overflow, sf);
                 }
@@ -321,7 +341,8 @@ impl Machine {
                 };
                 self.set_sized(rd, sf, result);
                 if op == LogicalOp::Ands {
-                    self.set_flags(result, self.c, false, sf);
+                    // A64 sets C from the shifter, and an immediate operand performs no shift.
+                    self.set_flags(result, false, false, sf);
                 }
                 self.pc = next;
             }
@@ -348,7 +369,8 @@ impl Machine {
                 };
                 self.set_sized(rd, sf, result);
                 if op == LogicalOp::Ands {
-                    self.set_flags(result, self.c, false, sf);
+                    // No shift yields no carry; a shifted operand would carry out of the shifter.
+                    self.set_flags(result, amount == 0, false, sf);
                 }
                 self.pc = next;
             }
@@ -441,7 +463,7 @@ impl Machine {
                 rn,
                 mode,
             } => {
-                let base = self.get(rn);
+                let base = self.get_sp(rn);
                 let (address, writeback) = match mode {
                     AddressMode::Offset { imm } | AddressMode::Unscaled { imm } => {
                         (base.wrapping_add_signed(imm), None)
@@ -488,7 +510,7 @@ impl Machine {
                     self.write(address, size, self.get(rt))?;
                 }
                 if let Some(sp) = writeback {
-                    self.set(rn, sp);
+                    self.set_sp(rn, sp);
                 }
                 self.pc = next;
             }
@@ -501,7 +523,7 @@ impl Machine {
                 mode,
             } => {
                 let size = if sf { 8 } else { 4 };
-                let base = self.get(rn);
+                let base = self.get_sp(rn);
                 let (address, writeback) = match mode {
                     AddressMode::Offset { imm } => (base.wrapping_add_signed(imm), None),
                     AddressMode::PreIndex { imm } => {
@@ -523,7 +545,7 @@ impl Machine {
                     self.write(address + u64::from(size), size, b)?;
                 }
                 if let Some(sp) = writeback {
-                    self.set(rn, sp);
+                    self.set_sp(rn, sp);
                 }
                 self.pc = next;
             }

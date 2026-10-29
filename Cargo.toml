@@ -12,6 +12,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 [dependencies]
 thiserror = "2"
 
+[dev-dependencies]
+# Only for mmap in the JIT tests: an executable mapping is not reachable through std.
+libc = "0.2"
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
