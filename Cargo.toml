@@ -1,0 +1,17 @@
+[package]
+name = "vitrine"
+version = "0.1.0"
+edition = "2024"
+description = "Rust core for the Citron Neo emulator: pipeline cache, IPC services, and the pieces where safe code costs nothing at runtime."
+license = "GPL-3.0-or-later"
+
+[lib]
+# cdylib so C++ links it; staticlib for a fully static binary; rlib for tests and crates.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+thiserror = "2"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

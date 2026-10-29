@@ -1,0 +1,5 @@
+/target
+cpp/cpp_check
+cpp/cpp_check-static
+*.so
+*.a

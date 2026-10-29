@@ -1,0 +1,132 @@
+/* SPDX-FileCopyrightText: Copyright 2026 Sophia Marie DeClue
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * vitrine.h — C interface to the Vitrine Rust core.
+ *
+ * Drop-in replacement for the pipeline-cache half of `src/video_core/shader_environment.cpp`.
+ * The cache file format is unchanged (Yuzu magic `yuzuvkch`, version 1), so an existing user's
+ * shaders load without rebuilding.
+ *
+ * # What changed from the C++ behaviour
+ *
+ * The C++ `LoadPipelines` deletes the entire cache file when any record fails to parse. This
+ * interface instead reports the damage and lets the caller decide:
+ *
+ *     Report r = vitrine_cache_inspect(cache_path);
+ *     if (r.status == VITRINE_WARN_DAMAGED) {
+ *         // Keep every record that parsed; lose only the unreadable tail.
+ *         vitrine_cache_repair(cache_path, &r, 1);
+ *     }
+ *     vitrine_report_free(&r);
+ *
+ * That is the one behavioural difference. Everything else — byte layout, magic, version, key
+ * length — is identical, so the two implementations can read the same file.
+ *
+ * # Thread safety
+ *
+ * Every function is safe to call from multiple threads with different paths. No global state is
+ * kept. A single `Report` must not be shared between threads, and `vitrine_report_free` must be
+ * called exactly once per report.
+ */
+
+#ifndef VITRINE_H
+#define VITRINE_H
+
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* -- status codes -------------------------------------------------------- */
+
+/** Operation succeeded; the cache is whole. */
+#define VITRINE_OK 0
+/** Operated, but the cache had damage: records were kept, the unreadable tail was lost. */
+#define VITRINE_WARN_DAMAGED 1
+/** Caller passed a null pointer or a non-UTF-8 path. */
+#define VITRINE_ERR_BAD_ARGUMENT -1
+/** The file could not be read or written. */
+#define VITRINE_ERR_IO -2
+/** Rust panicked inside the boundary; treat as a cold cache and continue. */
+#define VITRINE_ERR_PANIC -3
+/** A record could not be represented (unknown stage, oversized code). */
+#define VITRINE_ERR_BAD_RECORD -4
+
+/* -- types --------------------------------------------------------------- */
+
+/** Health of a cache file and the records recovered from it. */
+typedef struct Report {
+    int status;               /**< VITRINE_OK or VITRINE_WARN_DAMAGED, or a negative error. */
+    size_t record_count;      /**< Records that parsed cleanly. */
+    size_t env_count;         /**< Total environments ("shaders") across those records. */
+    size_t bytes_consumed;    /**< Bytes read before parsing stopped. */
+    size_t damage_offset;     /**< Offset of the first failure; 0 when clean. */
+    const char* damage_text;  /**< Reserved; currently always NULL. */
+    void* handle;             /**< Owned; release with vitrine_report_free(). */
+} Report;
+
+/** One environment, in the form C++ can build without touching Rust types. */
+typedef struct CEntry {
+    unsigned int local_memory_size;
+    unsigned int texture_bound;
+    unsigned int start_address;
+    unsigned int cached_lowest;
+    unsigned int cached_highest;
+    unsigned int viewport_transform_state;
+    unsigned int stage;              /**< 0=Vertex 1=TessCtrl 2=TessEval 3=Geometry 4=Fragment 5=Compute */
+    const unsigned long long* code; /**< ARM64 instruction words. */
+    size_t code_word_count;
+    unsigned int workgroup_size[3]; /**< Compute only. */
+    unsigned int shared_memory_size;/**< Compute only. */
+} CEntry;
+
+/** A pipeline to write: its 16-byte key and the environments compiled for it. */
+typedef struct PendingPipeline {
+    unsigned char key[16];
+    const CEntry* envs;
+    size_t env_count; /**< Must be 1..=64. */
+} PendingPipeline;
+
+/* -- functions ----------------------------------------------------------- */
+
+/**
+ * Read a cache file and describe its health without modifying it.
+ *
+ * A missing file is not an error: it reports VITRINE_OK with zero records, matching the C++
+ * behaviour of returning early when the stream will not open.
+ *
+ * The returned Report owns a handle and MUST be released with vitrine_report_free().
+ */
+Report vitrine_cache_inspect(const char* path);
+
+/**
+ * Act on an inspected cache.
+ *
+ * @param truncate  non-zero: rewrite the file with only the records that parsed (loses the
+ *                  unreadable tail and nothing else). zero: delete the file entirely.
+ * @return          number of records written, or a negative error code.
+ */
+int vitrine_cache_repair(const char* path, Report* report, int truncate);
+
+/**
+ * Append one pipeline's environments to a cache file, creating it when absent.
+ *
+ * If the existing file is damaged it is repaired first, so a second header can never be written
+ * into the middle of the stream.
+ *
+ * @return  1 on success, or a negative error code.
+ */
+int vitrine_cache_append(const char* path, const PendingPipeline* pipeline);
+
+/** Release a Report and the records it holds. Safe with a NULL pointer. */
+void vitrine_report_free(Report* report);
+
+/** Version string of the linked library, as a static NUL-terminated string. Never NULL. */
+const char* vitrine_version(void);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
+
+#endif /* VITRINE_H */
