@@ -826,3 +826,45 @@ pub unsafe extern "C" fn vitrine_jit_fault_addr(jit: *mut VitrineJit) -> u64 {
     // SAFETY: live handle per the caller's contract.
     unsafe { &*jit }.inner.state().fault_addr
 }
+
+/// Execute exactly one guest instruction (uncached translation). Used by `StepThread`.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_step(jit: *mut VitrineJit) -> VitrineRunResult {
+    let mut out = VitrineRunResult {
+        executed: 0,
+        exit_code: Exit::Next as u32,
+        pc: 0,
+        fault_addr: 0,
+        status: VITRINE_ERR_BAD_ARGUMENT,
+    };
+    if jit.is_null() {
+        return out;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: live handle per the caller's contract.
+        let handle = unsafe { &mut *jit };
+        let ran = handle.inner.step();
+        let state = handle.inner.state();
+        (ran, state.pc, state.fault_addr, state.last_exit)
+    }));
+    match result {
+        Ok((Ok(executed), pc, fault_addr, exit)) => {
+            out.executed = executed;
+            out.pc = pc;
+            out.fault_addr = fault_addr;
+            out.exit_code = exit as u32;
+            out.status = VITRINE_OK;
+        }
+        Ok((Err(_), pc, fault_addr, exit)) => {
+            out.pc = pc;
+            out.fault_addr = fault_addr;
+            out.exit_code = exit as u32;
+            out.status = VITRINE_ERR_BAD_RECORD;
+        }
+        Err(_) => out.status = VITRINE_ERR_PANIC,
+    }
+    out
+}

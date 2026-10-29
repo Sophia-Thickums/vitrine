@@ -244,6 +244,10 @@ void vitrine_jit_free(VitrineJit* jit);
 /* Run up to max_blocks blocks from the current pc. */
 VitrineRunResult vitrine_jit_run(VitrineJit* jit, uint64_t max_blocks);
 
+/* Execute exactly ONE instruction, translated fresh and uncached. StepThread uses this: a
+ * block-granular "step" has already walked past the instruction the debugger was showing. */
+VitrineRunResult vitrine_jit_step(VitrineJit* jit);
+
 /* Drop cached translations OVERLAPPING [addr, addr+size). Returns how many were dropped.
  * Overlap, not containment: a block translated before a branch into its middle was found is stale,
  * and its start lies outside the range being invalidated. */

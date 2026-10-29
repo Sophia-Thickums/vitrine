@@ -468,6 +468,36 @@ mod jit_abi {
         }
     }
 
+
+    #[test]
+    fn step_retires_exactly_one_instruction_and_does_not_use_the_cache() {
+        program();
+        let state = fresh(0);
+        unsafe {
+            let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
+
+            let first = ffi::vitrine_jit_step(jit);
+            assert_eq!(first.status, ffi::VITRINE_OK);
+            assert_eq!(first.pc, 4, "one instruction, not one block");
+            assert_eq!((*ffi::vitrine_jit_state(jit)).x[0], 1, "the mov executed");
+
+            // Stepping must not leave a one-instruction translation in the real cache: it would
+            // sit at the address the full block belongs to and be used for the next RunThread.
+            assert_eq!(ffi::vitrine_jit_cache_len(jit), 0, "step translates uncached");
+
+            let second = ffi::vitrine_jit_step(jit);
+            assert_eq!(second.pc, 8, "second step lands ON the svc, having executed the add");
+            assert_eq!(second.exit_code, jit::Exit::Next as u32, "the add is not a supervisor call");
+
+            // Third step is the `ret` (this fixture is mov, add, ret — the SVC path is exercised
+            // in the C++ adapter check, which has its own program).
+            let third = ffi::vitrine_jit_step(jit);
+            assert_eq!(third.exit_code, jit::Exit::Jumped as u32, "a return reports a jump");
+            assert_eq!(third.pc, 0x10000, "and pc followed x30");
+            ffi::vitrine_jit_free(jit);
+        }
+    }
+
     #[test]
     fn invalidating_a_range_that_only_overlaps_the_tail_still_drops_the_block() {
         program();

@@ -1175,6 +1175,34 @@ where
         self.cache.invalidate_range(addr, size)
     }
 
+    /// Execute exactly ONE guest instruction, translated fresh and NOT cached.
+    ///
+    /// Block-granular stepping is not stepping: a debugger that retires a whole basic block per
+    /// "step" has already moved past the instruction the user was looking at. The translation is
+    /// deliberately uncached — a one-instruction block at the same address would collide in the
+    /// cache with the real block that belongs there.
+    pub fn step(&mut self) -> Result<u64, String> {
+        let pc = self.state.pc;
+        if !pc.is_multiple_of(4) {
+            return Err(format!("misaligned pc {pc:#x}"));
+        }
+        let block = {
+            let reader = &mut self.read_word;
+            crate::block::scan_at(pc as i64, |a: i64| reader(a as u64), 1)
+        };
+        let Some(block) = block else {
+            return Err(format!("nothing mapped at {pc:#x}"));
+        };
+        if !block.is_compilable() {
+            return Err(format!("untranslatable word at {pc:#x}"));
+        }
+        let code = compile(&block).map_err(|i| format!("unsupported instruction: {i:?}"))?;
+        let exec = Exec::new(&code);
+        let exit = (exec.entry())(&mut self.state);
+        self.state.last_exit = exit;
+        Ok(1)
+    }
+
     /// Run until a supervisor call, a data abort, an unsupported instruction, or `max_blocks`.
     ///
     /// The exit reason is left in `state.last_exit`; `state.pc` is where execution stopped, which on
