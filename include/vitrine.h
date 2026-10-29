@@ -33,6 +33,7 @@
 #define VITRINE_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -189,6 +190,77 @@ int vitrine_content_select(const CContentEntry* entries, size_t entry_count,
                            CReject* rejects, size_t reject_cap,
                            CWarning* warnings, size_t warning_cap,
                            CSelectResult* out);
+
+
+/* ============================================================================================
+ * The JIT ABI — a running CPU, not a file.
+ *
+ * The functions above describe a pipeline cache on disk. These describe execution: the caller owns
+ * a guest state block, supplies a word reader that can REFUSE (an unmapped page is negative, not a
+ * zero word), and gets back where execution stopped and why.
+ *
+ * The C++ backend for Citron's ArmInterface maps onto this directly:
+ *   RunThread      -> vitrine_jit_run(max_blocks) in a loop until the exit code is not 0/1
+ *   StepThread     -> vitrine_jit_run(1)
+ *   InvalidateRange-> vitrine_jit_invalidate
+ *   Get/SetContext -> the reg/pc/sp/flags accessors below
+ * ========================================================================================== */
+
+typedef struct VitrineJit VitrineJit;
+
+/* Reads one 32-bit instruction word at `addr`. Return a NEGATIVE value when the address cannot be
+ * read. Negative rather than a sentinel word, because every 32-bit pattern is a legal encoding. */
+typedef int64_t (*vitrine_read_word)(void* ctx, uint64_t addr);
+
+/* Exit codes, matching jit::Exit in Rust. */
+#define VITRINE_EXIT_NEXT          0u
+#define VITRINE_EXIT_JUMPED        1u
+#define VITRINE_EXIT_SVC           2u
+#define VITRINE_EXIT_UNSUPPORTED   3u
+#define VITRINE_EXIT_DATA_ABORT    4u
+
+typedef struct {
+    uint64_t executed;    /* blocks retired before stopping */
+    uint32_t exit_code;   /* one of VITRINE_EXIT_* */
+    uint64_t pc;          /* where execution stopped; on a data abort, the faulting instruction */
+    uint64_t fault_addr;  /* valid only when exit_code == VITRINE_EXIT_DATA_ABORT */
+    int32_t status;       /* 0 on a completed run, negative on a refusal or a panic */
+} VitrineRunResult;
+
+/* Allocate the guest state block: the size is exposed so C++ never hard-codes the layout. */
+size_t vitrine_jit_state_size(void);
+
+/* Create a JIT. The state block is COPIED in; the caller may free theirs immediately after.
+ * Returns NULL on a null state pointer or an internal panic. */
+VitrineJit* vitrine_jit_new(const void* state, vitrine_read_word read, void* ctx);
+
+/* The same, with a ZEROED guest state: use this when the caller has no state block to import.
+ * Allocating vitrine_jit_state_size() bytes in C and passing them here would be uninitialised
+ * memory crossing the boundary, which is undefined however well it appears to work. */
+VitrineJit* vitrine_jit_new_default(vitrine_read_word read, void* ctx);
+
+void vitrine_jit_free(VitrineJit* jit);
+
+/* Run up to max_blocks blocks from the current pc. */
+VitrineRunResult vitrine_jit_run(VitrineJit* jit, uint64_t max_blocks);
+
+/* Drop cached translations OVERLAPPING [addr, addr+size). Returns how many were dropped.
+ * Overlap, not containment: a block translated before a branch into its middle was found is stale,
+ * and its start lies outside the range being invalidated. */
+uint64_t vitrine_jit_invalidate(VitrineJit* jit, uint64_t addr, uint64_t size);
+
+uint64_t vitrine_jit_cache_len(VitrineJit* jit);
+
+/* Guest state. x0..x30 only; sp, pc and flags have their own accessors. */
+uint64_t vitrine_jit_get_reg(VitrineJit* jit, uint32_t n);
+void     vitrine_jit_set_reg(VitrineJit* jit, uint32_t n, uint64_t value);
+uint64_t vitrine_jit_get_pc(VitrineJit* jit);
+void     vitrine_jit_set_pc(VitrineJit* jit, uint64_t value);
+uint64_t vitrine_jit_get_sp(VitrineJit* jit);
+void     vitrine_jit_set_sp(VitrineJit* jit, uint64_t value);
+uint8_t  vitrine_jit_get_flags(VitrineJit* jit);
+void     vitrine_jit_set_flags(VitrineJit* jit, uint8_t value);
+uint64_t vitrine_jit_fault_addr(VitrineJit* jit);
 
 #ifdef __cplusplus
 } /* extern "C" */

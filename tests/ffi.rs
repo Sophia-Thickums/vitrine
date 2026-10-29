@@ -374,3 +374,112 @@ fn selection_of_nothing_is_zero_and_clean() {
     assert_eq!(out.rejected_count, 0);
     assert_eq!(out.truncated, 0);
 }
+
+// ── the JIT ABI, called the way Citron's backend will call it ────────────────────────────────────
+
+mod jit_abi {
+    use std::os::raw::c_void;
+    use std::sync::OnceLock;
+
+    use vitrine::ffi;
+    use vitrine::jit::{self, JitState};
+
+    static PROGRAM: OnceLock<Vec<u32>> = OnceLock::new();
+
+    /// A guest with one readable page at 0 and nothing anywhere else — the smallest model that can
+    /// distinguish "mapped" from "unmapped", which is the whole point of the reader being fallible.
+    unsafe extern "C" fn read_word(_ctx: *mut c_void, addr: u64) -> i64 {
+        let program = PROGRAM.get().expect("program set");
+        if !addr.is_multiple_of(4) {
+            return -1;
+        }
+        match program.get((addr / 4) as usize) {
+            Some(w) => i64::from(*w),
+            None => -1,
+        }
+    }
+
+    fn program() -> &'static Vec<u32> {
+        PROGRAM.get_or_init(|| {
+            vec![
+                0xD280_0020, // mov x0, #1
+                0x9100_0801, // add x1, x0, #2
+                0xD65F_03C0, // ret
+            ]
+        })
+    }
+
+    fn fresh(pc: u64) -> JitState {
+        let mut s = JitState::new(0, 0);
+        s.pc = pc;
+        s.x[30] = 0x10000; // return to an address with nothing mapped there
+        s
+    }
+
+    #[test]
+    fn a_run_through_the_c_abi_executes_and_reports_where_it_stopped() {
+        program();
+        let state = fresh(0);
+        unsafe {
+            let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
+            assert!(!jit.is_null(), "handle created");
+            let r = ffi::vitrine_jit_run(jit, 1);
+            assert_eq!(r.status, ffi::VITRINE_OK);
+            assert_eq!(r.executed, 1, "one block retired");
+            let s = &*ffi::vitrine_jit_state(jit);
+            assert_eq!(s.x[1], 3, "the add ran: x1 = x0 + 2");
+            assert_eq!(r.pc, 0x10000, "pc followed the return");
+            assert_eq!(r.exit_code, jit::Exit::Jumped as u32);
+            ffi::vitrine_jit_free(jit);
+        }
+    }
+
+    #[test]
+    fn fetching_from_an_unmapped_address_refuses_instead_of_executing_zeros() {
+        program();
+        let state = fresh(0x8000); // past the end of everything the reader knows
+        unsafe {
+            let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
+            let r = ffi::vitrine_jit_run(jit, 1);
+            assert_ne!(r.status, ffi::VITRINE_OK, "an unmapped fetch is a refusal, not a run");
+            assert_eq!(r.executed, 0);
+            ffi::vitrine_jit_free(jit);
+        }
+    }
+
+    #[test]
+    fn invalidation_drops_the_cached_block_and_a_second_run_translates_again() {
+        program();
+        let state = fresh(0);
+        unsafe {
+            let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
+            let _ = ffi::vitrine_jit_run(jit, 1);
+            assert_eq!(ffi::vitrine_jit_cache_len(jit), 1, "one block cached");
+
+            assert_eq!(ffi::vitrine_jit_invalidate(jit, 0, 4), 1, "the range contains the block start");
+            assert_eq!(ffi::vitrine_jit_cache_len(jit), 0, "and it is gone");
+
+            // Re-run from the same pc: it must translate again rather than find a stale entry.
+            (*ffi::vitrine_jit_state(jit)).pc = 0;
+            let r = ffi::vitrine_jit_run(jit, 1);
+            assert_eq!(r.status, ffi::VITRINE_OK);
+            assert_eq!(ffi::vitrine_jit_cache_len(jit), 1);
+            ffi::vitrine_jit_free(jit);
+        }
+    }
+
+    #[test]
+    fn invalidating_a_range_that_only_overlaps_the_tail_still_drops_the_block() {
+        program();
+        let state = fresh(0);
+        unsafe {
+            let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
+            let _ = ffi::vitrine_jit_run(jit, 1);
+            // The block spans [0, 12). Invalidate only its last instruction.
+            assert_eq!(ffi::vitrine_jit_invalidate(jit, 8, 4), 1,
+                "overlap is what makes a translation stale, not containment of its start");
+            assert_eq!(ffi::vitrine_jit_cache_len(jit), 0);
+            ffi::vitrine_jit_free(jit);
+        }
+    }
+}

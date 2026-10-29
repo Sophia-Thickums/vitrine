@@ -1057,7 +1057,12 @@ impl Drop for Exec {
 /// hundred times slower than the interpreter — measured, not guessed. The cache is the difference
 /// between the two designs, and it is keyed on the guest address the block starts at.
 pub struct BlockCache {
-    blocks: std::collections::HashMap<u64, Exec>,
+    /// Start address -> (compiled code, guest address one past the block's last instruction).
+    ///
+    /// The end is stored because invalidation has to drop a block that *overlaps* a range, not only
+    /// one that starts inside it: a branch discovered into the middle of a long block makes that
+    /// block wrong, and its start is outside the range being invalidated.
+    blocks: std::collections::HashMap<u64, (Exec, u64)>,
 }
 
 impl BlockCache {
@@ -1081,20 +1086,137 @@ impl BlockCache {
     /// Compile `block` (which must start at `start`) if it is not already cached, and return its
     /// entry point.
     pub fn get_or_compile(&mut self, start: u64, block: &crate::block::Block) -> Result<extern "C" fn(*mut JitState) -> u64, Instr> {
-        if let Some(exec) = self.blocks.get(&start) {
+        if let Some((exec, _end)) = self.blocks.get(&start) {
             return Ok(exec.entry());
         }
         let code = compile(block)?;
         let exec = Exec::new(&code);
         let entry = exec.entry();
-        self.blocks.insert(start, exec);
+        self.blocks.insert(start, (exec, block.end as u64));
         Ok(entry)
+    }
+}
+
+impl BlockCache {
+    /// Drop every compiled block that OVERLAPS `[addr, addr + size)`; returns how many went.
+    ///
+    /// Overlap, not containment: a block that starts before the range and runs into it is stale the
+    /// moment the range changes, and a start-only test would leave it resident and wrong. The
+    /// returned count is there so a caller can tell "nothing matched" from "the range was wrong" —
+    /// a silent zero is exactly how a stale block survives an invalidation and then executes old
+    /// code at a new address.
+    pub fn invalidate_range(&mut self, addr: u64, size: u64) -> usize {
+        let end = addr.saturating_add(size);
+        let before = self.blocks.len();
+        self.blocks.retain(|&start, (_exec, guest_end)| {
+            let overlaps = start < end && *guest_end > addr;
+            !overlaps
+        });
+        before - self.blocks.len()
     }
 }
 
 impl Default for BlockCache {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A JIT that fetches blocks from guest memory **by address**.
+///
+/// `run_cached` takes the whole program as a `&[u32]`: right for a benchmark, useless to an
+/// emulator, whose instructions live behind a page table and whose blocks are only discovered as
+/// execution reaches them. Here words arrive through `read_word` (which answers `None` for an
+/// address it cannot read) and blocks are cached by guest address, which is also what makes
+/// [`BlockCache::invalidate_range`] meaningful.
+pub struct AddressJit<F>
+where
+    F: FnMut(u64) -> Option<u32>,
+{
+    read_word: F,
+    cache: BlockCache,
+    state: JitState,
+    /// Bound on one block's decode. Real code terminates blocks in a handful of instructions; this
+    /// exists so a page of zeros or garbage cannot spin the scanner forever.
+    max_instructions: usize,
+}
+
+impl<F> AddressJit<F>
+where
+    F: FnMut(u64) -> Option<u32>,
+{
+    /// Build a JIT over `read_word`, starting from `state`.
+    pub fn new(read_word: F, state: JitState) -> Self {
+        Self {
+            read_word,
+            cache: BlockCache::new(),
+            state,
+            max_instructions: 1024,
+        }
+    }
+
+    /// The guest state. Registers are read and written here, not through accessors.
+    pub fn state(&self) -> &JitState {
+        &self.state
+    }
+
+    /// Mutable guest state, so a caller can load registers and `pc` before a run.
+    pub fn state_mut(&mut self) -> &mut JitState {
+        &mut self.state
+    }
+
+    /// How many blocks are compiled and resident.
+    pub fn cache_len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Drop cached translations overlapping `[addr, addr + size)`. Returns the count dropped.
+    pub fn invalidate(&mut self, addr: u64, size: u64) -> usize {
+        self.cache.invalidate_range(addr, size)
+    }
+
+    /// Run until a supervisor call, a data abort, an unsupported instruction, or `max_blocks`.
+    ///
+    /// The exit reason is left in `state.last_exit`; `state.pc` is where execution stopped, which on
+    /// a data abort is the faulting instruction itself, so the caller can map the page and re-run.
+    pub fn run(&mut self, max_blocks: u64) -> Result<u64, String> {
+        let mut executed = 0u64;
+        while executed < max_blocks {
+            let pc = self.state.pc;
+            if !pc.is_multiple_of(4) {
+                return Err(format!("misaligned pc {pc:#x}"));
+            }
+            let block = {
+                let reader = &mut self.read_word;
+                crate::block::scan_at(pc as i64, |a: i64| reader(a as u64), self.max_instructions)
+            };
+            let Some(block) = block else {
+                return Err(format!("nothing mapped at {pc:#x}"));
+            };
+            if !block.is_compilable() {
+                return Err(format!("untranslatable block at {pc:#x}"));
+            }
+            let entry = self
+                .cache
+                .get_or_compile(pc, &block)
+                .map_err(|i| format!("unsupported instruction: {i:?}"))?;
+            let exit = entry(&mut self.state);
+            executed += 1;
+            // Written on EVERY exit, not only on the two interesting ones. Setting it only for
+            // SVC and DataAbort left a normal block exit reporting 0 forever, which reads as
+            // "fell off the end" and is indistinguishable from an uninitialised field.
+            self.state.last_exit = exit;
+            if exit == Exit::SupervisorCall as u64 || exit == Exit::DataAbort as u64 {
+                return Ok(executed);
+            }
+            if exit == Exit::Unsupported as u64 {
+                return Err("unsupported instruction".into());
+            }
+            if exit != Exit::Next as u64 && exit != Exit::Jumped as u64 {
+                return Err(format!("bad exit code {exit}"));
+            }
+        }
+        Ok(executed)
     }
 }
 

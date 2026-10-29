@@ -536,3 +536,293 @@ pub unsafe extern "C" fn vitrine_content_select(
 
 use crate::content::{self, TitleType};
 
+
+// ── The JIT ABI — what a C++ `ArmInterface` backend calls ───────────────────────────────────────
+//
+// The pipeline-cache entry points above describe a FILE. These describe a RUNNING CPU: a guest
+// state block the caller owns, a word reader that can fail (an unmapped page is `None`, not a
+// zero), and a run that stops with a reason the caller can act on.
+
+use crate::jit::{AddressJit, Exit};
+use std::ffi::c_void;
+
+/// Reads one 32-bit guest instruction word at `addr`; returns a negative value when unmapped.
+///
+/// Negative rather than a sentinel word, because every 32-bit pattern is a legal instruction
+/// encoding — there is no in-band value left to spare.
+pub type VitrineReadWord = unsafe extern "C" fn(ctx: *mut c_void, addr: u64) -> i64;
+
+/// Where a run stopped. Mirrors `jit::Exit` numerically, so the C++ side can switch on it.
+#[repr(C)]
+pub struct VitrineRunResult {
+    /// Blocks executed before stopping.
+    pub executed: u64,
+    /// 0 next · 1 jumped · 2 supervisor call · 3 unsupported · 4 data abort.
+    pub exit_code: u32,
+    /// Where execution stopped. On a data abort this is the faulting instruction, so it can be
+    /// re-executed once the caller has made the page readable.
+    pub pc: u64,
+    /// The address that faulted, valid only for exit code 4.
+    pub fault_addr: u64,
+    /// [`VITRINE_OK`] or one of the `VITRINE_ERR_*` codes.
+    pub status: i32,
+}
+
+/// Opaque handle. Owns the cache, the state block and the reader closure.
+pub struct VitrineJit {
+    inner: AddressJit<Box<dyn FnMut(u64) -> Option<u32>>>,
+}
+
+/// Create a JIT. The state is copied in; the caller's block may be dropped afterwards.
+///
+/// # Safety
+/// `read` must be a valid function pointer that stays callable for as long as the handle lives, and
+/// `ctx` must remain valid for the same period.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_new(
+    state: *const crate::jit::JitState,
+    read: VitrineReadWord,
+    ctx: *mut c_void,
+) -> *mut VitrineJit {
+    if state.is_null() {
+        return std::ptr::null_mut();
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: the caller guarantees `state` points at a JitState.
+        let initial = unsafe { std::ptr::read(state) };
+        let reader = move |addr: u64| {
+            // SAFETY: `read` and `ctx` were required to outlive the handle.
+            let word = unsafe { read(ctx, addr) };
+            if word < 0 { None } else { Some(word as u32) }
+        };
+        Box::into_raw(Box::new(VitrineJit {
+            inner: AddressJit::new(Box::new(reader) as Box<dyn FnMut(u64) -> Option<u32>>, initial),
+        }))
+    }));
+    result.unwrap_or(std::ptr::null_mut())
+}
+
+
+/// Create a JIT with a ZEROED guest state — the door for a caller that has no state to import.
+///
+/// [`vitrine_jit_new`] copies a caller-owned block, which an emulator backend can build from its
+/// thread context but a fresh caller cannot: the layout is Rust's, so the only way to make one in C
+/// is to allocate `vitrine_jit_state_size()` bytes and fill them with nothing, and passing
+/// uninitialised memory across the boundary is undefined however well it happens to work. This
+/// constructor removes that trap.
+///
+/// # Safety
+/// `read` must stay callable for as long as the handle lives, and `ctx` must remain valid meanwhile.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_new_default(
+    read: VitrineReadWord,
+    ctx: *mut c_void,
+) -> *mut VitrineJit {
+    let initial = crate::jit::JitState::new(0, 0);
+    // SAFETY: `initial` is a live, initialised JitState for the duration of the call.
+    unsafe { vitrine_jit_new(&initial, read, ctx) }
+}
+
+/// Release a handle. Null is accepted and ignored.
+///
+/// # Safety
+/// `jit` must be a pointer returned by [`vitrine_jit_new`] and must not be used afterwards.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_free(jit: *mut VitrineJit) {
+    if jit.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: the pointer came from `Box::into_raw` in `vitrine_jit_new`, dropped exactly once.
+        drop(unsafe { Box::from_raw(jit) });
+    }));
+}
+
+/// The live guest state, for reading registers out and writing them in. Null if `jit` is null.
+///
+/// # Safety
+/// `jit` must be a live handle. The pointer is invalidated by [`vitrine_jit_free`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_state(jit: *mut VitrineJit) -> *mut crate::jit::JitState {
+    if jit.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: `jit` is a live handle per the caller's contract.
+    let handle = unsafe { &mut *jit };
+    handle.inner.state_mut()
+}
+
+/// Run up to `max_blocks` blocks from the state's `pc`.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_run(jit: *mut VitrineJit, max_blocks: u64) -> VitrineRunResult {
+    let mut out = VitrineRunResult {
+        executed: 0,
+        exit_code: Exit::Next as u32,
+        pc: 0,
+        fault_addr: 0,
+        status: VITRINE_ERR_BAD_ARGUMENT,
+    };
+    if jit.is_null() {
+        return out;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: live handle per the caller's contract.
+        let handle = unsafe { &mut *jit };
+        let ran = handle.inner.run(max_blocks);
+        let state = handle.inner.state();
+        (ran, state.pc, state.fault_addr, state.last_exit)
+    }));
+    match result {
+        Ok((Ok(executed), pc, fault_addr, exit)) => {
+            out.executed = executed;
+            out.pc = pc;
+            out.fault_addr = fault_addr;
+            out.exit_code = exit as u32;
+            out.status = VITRINE_OK;
+        }
+        Ok((Err(_why), pc, fault_addr, exit)) => {
+            // A refusal is a result, not a crash: pc and the exit code still tell the caller where
+            // it stopped, which is what a JIT that met an instruction it cannot emit must report.
+            out.pc = pc;
+            out.fault_addr = fault_addr;
+            out.exit_code = exit as u32;
+            out.status = VITRINE_ERR_BAD_RECORD;
+        }
+        Err(_) => out.status = VITRINE_ERR_PANIC,
+    }
+    out
+}
+
+/// Drop cached translations overlapping `[addr, addr + size)`. Returns how many were dropped.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_invalidate(jit: *mut VitrineJit, addr: u64, size: u64) -> u64 {
+    if jit.is_null() {
+        return 0;
+    }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        // SAFETY: live handle per the caller's contract.
+        let handle = unsafe { &mut *jit };
+        handle.inner.invalidate(addr, size) as u64
+    }));
+    result.unwrap_or(0)
+}
+
+/// How many blocks are compiled and resident.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_cache_len(jit: *mut VitrineJit) -> u64 {
+    if jit.is_null() {
+        return 0;
+    }
+    // SAFETY: live handle per the caller's contract.
+    let handle = unsafe { &*jit };
+    handle.inner.cache_len() as u64
+}
+
+/// Size of the guest state block, so C++ can allocate one without knowing the layout.
+#[unsafe(no_mangle)]
+pub extern "C" fn vitrine_jit_state_size() -> usize {
+    std::mem::size_of::<crate::jit::JitState>()
+}
+
+/// Read guest register `n` (0..=30). Out of range reads 0.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_get_reg(jit: *mut VitrineJit, n: u32) -> u64 {
+    if jit.is_null() || n > 30 {
+        return 0;
+    }
+    // SAFETY: live handle per the caller's contract; the index is range-checked above.
+    let state = unsafe { &*jit }.inner.state();
+    state.x[n as usize]
+}
+
+/// Write guest register `n` (0..=30). Out of range is ignored, not clamped.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_set_reg(jit: *mut VitrineJit, n: u32, value: u64) {
+    if jit.is_null() || n > 30 {
+        return;
+    }
+    // SAFETY: live handle per the caller's contract; the index is range-checked above.
+    unsafe { &mut *jit }.inner.state_mut().x[n as usize] = value;
+}
+
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_get_pc(jit: *mut VitrineJit) -> u64 {
+    if jit.is_null() { return 0; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &*jit }.inner.state().pc
+}
+
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_set_pc(jit: *mut VitrineJit, value: u64) {
+    if jit.is_null() { return; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &mut *jit }.inner.state_mut().pc = value;
+}
+
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_get_sp(jit: *mut VitrineJit) -> u64 {
+    if jit.is_null() { return 0; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &*jit }.inner.state().sp
+}
+
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_set_sp(jit: *mut VitrineJit, value: u64) {
+    if jit.is_null() { return; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &mut *jit }.inner.state_mut().sp = value;
+}
+
+/// Packed PSTATE flags: bit 3 N, 2 Z, 1 C, 0 V.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_get_flags(jit: *mut VitrineJit) -> u8 {
+    if jit.is_null() { return 0; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &*jit }.inner.state().flags
+}
+
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_set_flags(jit: *mut VitrineJit, value: u8) {
+    if jit.is_null() { return; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &mut *jit }.inner.state_mut().flags = value & 0x0F;
+}
+
+/// Guest address of the last data abort, valid when the last run returned exit code 4.
+///
+/// # Safety
+/// `jit` must be a live handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vitrine_jit_fault_addr(jit: *mut VitrineJit) -> u64 {
+    if jit.is_null() { return 0; }
+    // SAFETY: live handle per the caller's contract.
+    unsafe { &*jit }.inner.state().fault_addr
+}
