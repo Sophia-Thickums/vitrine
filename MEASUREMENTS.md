@@ -61,9 +61,24 @@ Identical checksums AND identical `unknown` counts (14,373,200) on both. A decod
 memory, relying on unspecified layout, or branching on architecture would not survive this — the two CPUs
 are nine years apart and share no AVX-512, so any such dependence shows up as a different hash.
 
-**How to reproduce, and the trap that costs an hour:** the binary must be built for a generic x86-64
-baseline. This distro's Rust std is compiled for a newer microarchitecture, so a binary built here dies
-on the Xeon with `Illegal instruction` — and so does a hello-world built the same way, which is the control
-that tells you it is the toolchain and not your code. The working route: build inside a Fedora container
-(`podman run --rm -v "$PWD":/w -w /w fedora:44 bash -lc 'dnf -y install cargo && cargo build --release --example shard'`),
-ship the result, run the same seed on both.
+**How to reproduce, and the trap — CORRECTED 2026-10-29 14:10, because the first version of this
+note named the wrong cause.** Ship the ordinary `cargo build --release --example shard` binary. That is
+all. It runs on the Xeon at 17.5 Mw/s and produces the identical hash above.
+
+What actually happened, in order, since the wrong explanation was committed:
+
+1. A binary built with `RUSTFLAGS=-C target-feature=+crt-static` died on her with `Illegal instruction`,
+   and a hello-world built the same way died identically. **That control was read as "this distro's std
+   is compiled for a newer microarchitecture". It is not.**
+2. A Fedora-container build was launched to get a "generic baseline", its `cargo build --offline`
+   **failed** on dependency resolution — and the shell reported `BUILT` anyway, because the pipeline
+   ended in `| tail -3` and a pipeline's exit status belongs to its LAST command. The `cp` that followed
+   then copied the HOST's binary, which is why the shipped file was byte-identical
+   (`sha256 c5f28491…`) to `target/release/examples/shard`.
+3. That binary ran on the Xeon without complaint — the same file the container was supposed to replace.
+
+**So the cause was `+crt-static` (a static-pie build), not the CPU baseline, and the fix was to stop
+using it.** Two laws with teeth in this: a control tells you *that* something differs, not *what*; and a
+pipelines exit status is the last command's, so `cargo build … | tail` can fail and still read as success.
+The determinism result above is unaffected — it was produced by that host binary, on both machines, with
+the same hash and the same unknown-count.
