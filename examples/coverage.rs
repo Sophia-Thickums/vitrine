@@ -30,7 +30,10 @@ fn main() {
     });
     let bytes = std::fs::read(&path).expect("read the .text blob");
     if !bytes.len().is_multiple_of(4) {
-        eprintln!("warning: {} bytes is not a whole number of instructions", bytes.len());
+        eprintln!(
+            "warning: {} bytes is not a whole number of instructions",
+            bytes.len()
+        );
     }
     let words: Vec<u32> = bytes
         .as_chunks::<4>()

@@ -359,7 +359,9 @@ pub struct CContentEntry {
 
 impl CContentEntry {
     fn as_entry(self) -> Option<content::Entry> {
-        let title_type = u8::try_from(self.title_type).ok().and_then(TitleType::from_u8)?;
+        let title_type = u8::try_from(self.title_type)
+            .ok()
+            .and_then(TitleType::from_u8)?;
         Some(content::Entry {
             title_id: self.title_id,
             version: self.version,
@@ -536,7 +538,6 @@ pub unsafe extern "C" fn vitrine_content_select(
 
 use crate::content::{self, TitleType};
 
-
 // ── The JIT ABI — what a C++ `ArmInterface` backend calls ───────────────────────────────────────
 //
 // The pipeline-cache entry points above describe a FILE. These describe a RUNNING CPU: a guest
@@ -596,12 +597,14 @@ pub unsafe extern "C" fn vitrine_jit_new(
             if word < 0 { None } else { Some(word as u32) }
         };
         Box::into_raw(Box::new(VitrineJit {
-            inner: AddressJit::new(Box::new(reader) as Box<dyn FnMut(u64) -> Option<u32>>, initial),
+            inner: AddressJit::new(
+                Box::new(reader) as Box<dyn FnMut(u64) -> Option<u32>>,
+                initial,
+            ),
         }))
     }));
     result.unwrap_or(std::ptr::null_mut())
 }
-
 
 /// Create a JIT with a ZEROED guest state — the door for a caller that has no state to import.
 ///
@@ -657,7 +660,10 @@ pub unsafe extern "C" fn vitrine_jit_state(jit: *mut VitrineJit) -> *mut crate::
 /// # Safety
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vitrine_jit_run(jit: *mut VitrineJit, max_blocks: u64) -> VitrineRunResult {
+pub unsafe extern "C" fn vitrine_jit_run(
+    jit: *mut VitrineJit,
+    max_blocks: u64,
+) -> VitrineRunResult {
     let mut out = VitrineRunResult {
         executed: 0,
         exit_code: Exit::Next as u32,
@@ -764,7 +770,9 @@ pub unsafe extern "C" fn vitrine_jit_set_reg(jit: *mut VitrineJit, n: u32, value
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_get_pc(jit: *mut VitrineJit) -> u64 {
-    if jit.is_null() { return 0; }
+    if jit.is_null() {
+        return 0;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &*jit }.inner.state().pc
 }
@@ -773,7 +781,9 @@ pub unsafe extern "C" fn vitrine_jit_get_pc(jit: *mut VitrineJit) -> u64 {
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_set_pc(jit: *mut VitrineJit, value: u64) {
-    if jit.is_null() { return; }
+    if jit.is_null() {
+        return;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &mut *jit }.inner.state_mut().pc = value;
 }
@@ -782,7 +792,9 @@ pub unsafe extern "C" fn vitrine_jit_set_pc(jit: *mut VitrineJit, value: u64) {
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_get_sp(jit: *mut VitrineJit) -> u64 {
-    if jit.is_null() { return 0; }
+    if jit.is_null() {
+        return 0;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &*jit }.inner.state().sp
 }
@@ -791,7 +803,9 @@ pub unsafe extern "C" fn vitrine_jit_get_sp(jit: *mut VitrineJit) -> u64 {
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_set_sp(jit: *mut VitrineJit, value: u64) {
-    if jit.is_null() { return; }
+    if jit.is_null() {
+        return;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &mut *jit }.inner.state_mut().sp = value;
 }
@@ -802,7 +816,9 @@ pub unsafe extern "C" fn vitrine_jit_set_sp(jit: *mut VitrineJit, value: u64) {
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_get_flags(jit: *mut VitrineJit) -> u8 {
-    if jit.is_null() { return 0; }
+    if jit.is_null() {
+        return 0;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &*jit }.inner.state().flags
 }
@@ -811,7 +827,9 @@ pub unsafe extern "C" fn vitrine_jit_get_flags(jit: *mut VitrineJit) -> u8 {
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_set_flags(jit: *mut VitrineJit, value: u8) {
-    if jit.is_null() { return; }
+    if jit.is_null() {
+        return;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &mut *jit }.inner.state_mut().flags = value & 0x0F;
 }
@@ -822,7 +840,9 @@ pub unsafe extern "C" fn vitrine_jit_set_flags(jit: *mut VitrineJit, value: u8) 
 /// `jit` must be a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vitrine_jit_fault_addr(jit: *mut VitrineJit) -> u64 {
-    if jit.is_null() { return 0; }
+    if jit.is_null() {
+        return 0;
+    }
     // SAFETY: live handle per the caller's contract.
     unsafe { &*jit }.inner.state().fault_addr
 }

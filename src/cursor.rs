@@ -45,11 +45,14 @@ impl<'a> Cursor<'a> {
 
     /// Read exactly `N` bytes.
     pub fn take<const N: usize>(&mut self) -> Result<[u8; N], Short> {
-        let end = self.pos.checked_add(N).ok_or(Short { needed: N, remaining: self.len() })?;
-        let slice = self
-            .bytes
-            .get(self.pos..end)
-            .ok_or(Short { needed: N, remaining: self.len() })?;
+        let end = self.pos.checked_add(N).ok_or(Short {
+            needed: N,
+            remaining: self.len(),
+        })?;
+        let slice = self.bytes.get(self.pos..end).ok_or(Short {
+            needed: N,
+            remaining: self.len(),
+        })?;
         let mut out = [0u8; N];
         out.copy_from_slice(slice);
         self.pos = end;

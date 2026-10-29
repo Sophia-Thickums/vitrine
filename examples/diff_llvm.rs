@@ -23,10 +23,7 @@ use vitrine::a64;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let count: usize = args
-        .next()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(20_000);
+    let count: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(20_000);
     let seed: u64 = args
         .next()
         .and_then(|s| u64::from_str_radix(s.trim_start_matches("0x"), 16).ok())
@@ -87,9 +84,14 @@ fn main() {
         .collect();
 
     let rejected: usize = stderr.matches("invalid instruction encoding").count()
-        + stderr.matches("potentially undefined instruction encoding").count();
+        + stderr
+            .matches("potentially undefined instruction encoding")
+            .count();
 
-    println!("words={count} llvm_decoded={} llvm_rejected={rejected}", mnemonics.len());
+    println!(
+        "words={count} llvm_decoded={} llvm_rejected={rejected}",
+        mnemonics.len()
+    );
 
     // Re-run word by word whenever the bulk counts do not line up, so the comparison is exact
     // rather than positional guesswork.

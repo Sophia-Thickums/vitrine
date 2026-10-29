@@ -36,7 +36,9 @@ fn programs() -> BTreeMap<String, Vec<u32>> {
 }
 
 fn main() {
-    let name = std::env::args().nth(1).unwrap_or_else(|| "loop_1000".to_string());
+    let name = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "loop_1000".to_string());
     let repeats: u64 = std::env::args()
         .nth(2)
         .and_then(|s| s.parse().ok())
@@ -78,7 +80,10 @@ fn main() {
     let jit_elapsed = start.elapsed().as_secs_f64();
     let cached = cache.len();
 
-    println!("program: {name}  ({} instructions, {repeats} runs)", words.len());
+    println!(
+        "program: {name}  ({} instructions, {repeats} runs)",
+        words.len()
+    );
     println!(
         "interpreter: {interp_elapsed:.3}s  {retired} instructions retired  {:.1} M/s",
         retired as f64 / interp_elapsed / 1e6
@@ -88,9 +93,7 @@ fn main() {
         jit_elapsed / blocks as f64 * 1e6
     );
     let ratio = interp_elapsed / jit_elapsed;
-    println!(
-        "\nwall-clock ratio (interpreter / compiled) = {ratio:.2}x"
-    );
+    println!("\nwall-clock ratio (interpreter / compiled) = {ratio:.2}x");
     println!(
         "Blocks are compiled once and reused; the translation cost is amortised over the run."
     );

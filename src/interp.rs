@@ -90,10 +90,9 @@ impl Machine {
     }
 
     fn index(&self, address: u64, size: u8) -> Result<usize, Trap> {
-        let rel = address.checked_sub(self.base).ok_or(Trap::BadAddress {
-            address,
-            size,
-        })?;
+        let rel = address
+            .checked_sub(self.base)
+            .ok_or(Trap::BadAddress { address, size })?;
         let end = rel + u64::from(size);
         if end > self.memory.len() as u64 {
             return Err(Trap::BadAddress { address, size });
@@ -147,7 +146,9 @@ impl Machine {
     /// Read a register at a given operand width, honouring W-register zero-extension.
     /// Read `Vn` as a double.
     fn dfp(&self, n: u8) -> f64 {
-        f64::from_bits(u64::from_le_bytes(self.fp[n as usize][..8].try_into().unwrap()))
+        f64::from_bits(u64::from_le_bytes(
+            self.fp[n as usize][..8].try_into().unwrap(),
+        ))
     }
 
     /// Write `Vn` as a double.
@@ -157,7 +158,9 @@ impl Machine {
 
     /// Read `Vn` as a single-precision value, widened.
     fn sfp(&self, n: u8) -> f32 {
-        f32::from_bits(u32::from_le_bytes(self.fp[n as usize][..4].try_into().unwrap()))
+        f32::from_bits(u32::from_le_bytes(
+            self.fp[n as usize][..4].try_into().unwrap(),
+        ))
     }
 
     /// Write `Vn` as a single-precision value.
@@ -261,7 +264,11 @@ impl Machine {
             } => {
                 let zero = self.get_sized(rt, sf) == 0;
                 let take = zero != nonzero;
-                self.pc = if take { pc.wrapping_add_signed(offset) } else { next };
+                self.pc = if take {
+                    pc.wrapping_add_signed(offset)
+                } else {
+                    next
+                };
             }
             Instr::Tbz {
                 nonzero,
@@ -271,7 +278,11 @@ impl Machine {
             } => {
                 let set = (self.get(rt) >> bit) & 1 != 0;
                 let take = set == nonzero;
-                self.pc = if take { pc.wrapping_add_signed(offset) } else { next };
+                self.pc = if take {
+                    pc.wrapping_add_signed(offset)
+                } else {
+                    next
+                };
             }
             Instr::Br { rn } => self.pc = self.get(rn),
             Instr::Blr { rn } => {
@@ -310,7 +321,11 @@ impl Machine {
             } => {
                 let imm = u64::from(imm) << if lsl12 { 12 } else { 0 };
                 // ADD/SUB immediate is one of the few encodings where 31 means SP.
-                let a = if sf { self.get_sp(rn) } else { self.get_sp(rn) & 0xFFFF_FFFF };
+                let a = if sf {
+                    self.get_sp(rn)
+                } else {
+                    self.get_sp(rn) & 0xFFFF_FFFF
+                };
                 let (result, carry, overflow) = if sub {
                     add_with_carry(a, !imm, 1, sf)
                 } else {
@@ -444,11 +459,7 @@ impl Machine {
             } => {
                 let a = self.get_sized(rn, sf);
                 let b = self.get_sized(rm, sf);
-                let acc = if ra == 31 {
-                    0
-                } else {
-                    self.get_sized(ra, sf)
-                };
+                let acc = if ra == 31 { 0 } else { self.get_sized(ra, sf) };
                 let prod = a.wrapping_mul(b);
                 let v = if sub {
                     acc.wrapping_sub(prod)
@@ -488,7 +499,11 @@ impl Machine {
                         (a as u32 as i32 as i64, b as u32 as i32 as i64)
                     };
                     // Division by zero yields zero in A64; it does not trap.
-                    if bi == 0 { 0 } else { ai.wrapping_div(bi) as u64 }
+                    if bi == 0 {
+                        0
+                    } else {
+                        ai.wrapping_div(bi) as u64
+                    }
                 } else {
                     a.checked_div(b).unwrap_or(0)
                 };
@@ -621,7 +636,11 @@ impl Machine {
                     let a = self.dfp(rn);
                     let b = self.dfp(rm);
                     let acc = self.dfp(ra);
-                    let mut v = if op & 1 != 0 { acc - a * b } else { acc + a * b };
+                    let mut v = if op & 1 != 0 {
+                        acc - a * b
+                    } else {
+                        acc + a * b
+                    };
                     if op & 2 != 0 {
                         v = -v;
                     }
@@ -630,7 +649,11 @@ impl Machine {
                     let a = self.sfp(rn) as f64;
                     let b = self.sfp(rm) as f64;
                     let acc = self.sfp(ra) as f64;
-                    let mut v = if op & 1 != 0 { acc - a * b } else { acc + a * b };
+                    let mut v = if op & 1 != 0 {
+                        acc - a * b
+                    } else {
+                        acc + a * b
+                    };
                     if op & 2 != 0 {
                         v = -v;
                     }
@@ -820,7 +843,12 @@ fn bitfield(src: u64, width: u32, immr: u8, imms: u8, signed: bool) -> u64 {
     let src = src & mask;
     if imms >= immr {
         let size = u32::from(imms) - u32::from(immr) + 1;
-        let shifted = (src >> u32::from(immr)) & if size >= 64 { u64::MAX } else { (1u64 << size) - 1 };
+        let shifted = (src >> u32::from(immr))
+            & if size >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << size) - 1
+            };
         if signed {
             // SBFM sign-extends from bit `size-1` when imms < width-1.
             sign_extend_to(shifted, size, width)
@@ -835,7 +863,12 @@ fn bitfield(src: u64, width: u32, immr: u8, imms: u8, signed: bool) -> u64 {
             (src as u32).rotate_right(u32::from(immr) % width) as u64
         };
         let size = u32::from(imms) + 1;
-        let out = rotated & if size >= 64 { u64::MAX } else { (1u64 << size) - 1 };
+        let out = rotated
+            & if size >= 64 {
+                u64::MAX
+            } else {
+                (1u64 << size) - 1
+            };
         if signed {
             sign_extend_to(out, size, width)
         } else {
@@ -851,11 +884,7 @@ fn sign_extend_to(value: u64, from: u32, to: u32) -> u64 {
     let sign = (value >> (from - 1)) & 1 != 0;
     let mask = (1u64 << from) - 1;
     let v = value & mask;
-    if sign {
-        v | !mask
-    } else {
-        v
-    }
+    if sign { v | !mask } else { v }
 }
 
 /// Apply a scalar FP operation.

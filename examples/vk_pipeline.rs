@@ -44,7 +44,9 @@ fn main() {
         }
     }
     if shaders.is_empty() {
-        eprintln!("usage: vk_pipeline [--device <substr>] [--save <file> | --load <file>] <file.spv>...");
+        eprintln!(
+            "usage: vk_pipeline [--device <substr>] [--save <file> | --load <file>] <file.spv>..."
+        );
         std::process::exit(2);
     }
 
@@ -53,7 +55,12 @@ fn main() {
         .map(|p| {
             let bytes = std::fs::read(p).unwrap_or_else(|e| panic!("{p}: {e}"));
             assert!(bytes.len() % 4 == 0, "SPIR-V length is not a multiple of 4");
-            bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect()
+            bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
         })
         .collect();
 
@@ -125,7 +132,13 @@ fn main() {
 
 unsafe fn init(
     filter: &str,
-) -> (ash::Entry, ash::Instance, vk::PhysicalDevice, ash::Device, u32) {
+) -> (
+    ash::Entry,
+    ash::Instance,
+    vk::PhysicalDevice,
+    ash::Device,
+    u32,
+) {
     // `loaded` feature: resolve the loader at runtime rather than link-time.
     let entry = ash::Entry::load().expect("load libvulkan");
     let app = vk::ApplicationInfo::default()
@@ -158,7 +171,9 @@ unsafe fn init(
         .queue_family_index(queue_family)
         .queue_priorities(&priority)];
     let dci = vk::DeviceCreateInfo::default().queue_create_infos(&queue_info);
-    let device = instance.create_device(physical, &dci, None).expect("device");
+    let device = instance
+        .create_device(physical, &dci, None)
+        .expect("device");
     let _ = props;
     (entry, instance, physical, device, queue_family)
 }
@@ -188,7 +203,9 @@ unsafe fn create_all(
         .expect("set layout");
     let layouts = [set_layout];
     let layout_ci = vk::PipelineLayoutCreateInfo::default().set_layouts(&layouts);
-    let layout = device.create_pipeline_layout(&layout_ci, None).expect("layout");
+    let layout = device
+        .create_pipeline_layout(&layout_ci, None)
+        .expect("layout");
 
     let stages: Vec<vk::PipelineShaderStageCreateInfo> = modules
         .iter()

@@ -136,7 +136,6 @@ pub fn compile(block: &Block) -> Result<Vec<u8>, Instr> {
     Ok(c.finish())
 }
 
-
 /// Labels for the data-abort stub guarding the instruction at `offset`.
 ///
 /// Derived from the instruction's address rather than from a counter, so `emit` stays a pure
@@ -556,11 +555,7 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
                     }
                     c.mov_load(Reg::Rcx, Reg::R15, state::x(rm));
                     if scaled_by_size {
-                        c.shift_imm(
-                            Reg::Rcx,
-                            4,
-                            size.trailing_zeros() as u8,
-                        );
+                        c.shift_imm(Reg::Rcx, 4, size.trailing_zeros() as u8);
                     }
                     (0, Some(None))
                 }
@@ -731,7 +726,13 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
         }
         // Scalar double-precision. Single-precision forms are refused rather than computed at the
         // wrong width.
-        Instr::FpArith { dp: true, op, rd, rn, rm } => {
+        Instr::FpArith {
+            dp: true,
+            op,
+            rd,
+            rn,
+            rm,
+        } => {
             c.movsd_load(0, Reg::R15, state::fp(rn));
             c.movsd_load(1, Reg::R15, state::fp(rm));
             let opcode = match op {
@@ -872,9 +873,6 @@ fn materialise_flags(c: &mut Code, subtraction: bool) {
     c.or_reg(Reg::Rcx, Reg::Rdx);
     c.mov_store(Reg::R15, state::FLAGS, Reg::Rcx);
 }
-
-
-
 
 /// Exit without touching `pc` — for paths that have already stored it.
 fn epilogue_tail(c: &mut Code, exit: Exit) {
@@ -1085,7 +1083,11 @@ impl BlockCache {
 
     /// Compile `block` (which must start at `start`) if it is not already cached, and return its
     /// entry point.
-    pub fn get_or_compile(&mut self, start: u64, block: &crate::block::Block) -> Result<extern "C" fn(*mut JitState) -> u64, Instr> {
+    pub fn get_or_compile(
+        &mut self,
+        start: u64,
+        block: &crate::block::Block,
+    ) -> Result<extern "C" fn(*mut JitState) -> u64, Instr> {
         if let Some((exec, _end)) = self.blocks.get(&start) {
             return Ok(exec.entry());
         }

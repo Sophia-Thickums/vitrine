@@ -105,9 +105,16 @@ fn a_call_ends_the_block_and_falls_through_after_it() {
     let p = block::scan(&words);
     let b0 = p.block_at(0).expect("block at 0");
     assert_eq!(b0.len(), 2, "mov then bl");
-    assert_eq!(b0.exit, Exit::Fallthrough, "a call returns to the next instruction");
+    assert_eq!(
+        b0.exit,
+        Exit::Fallthrough,
+        "a call returns to the next instruction"
+    );
     assert!(b0.is_compilable());
-    assert!(p.block_at(8).is_some(), "the instruction after the bl starts a block");
+    assert!(
+        p.block_at(8).is_some(),
+        "the instruction after the bl starts a block"
+    );
 }
 
 #[test]
@@ -117,7 +124,10 @@ fn an_undecodable_instruction_marks_its_block_uncompilable() {
     let p = block::scan(&words);
     let b = p.block_at(0).expect("block at 0");
     assert!(b.has_unknown);
-    assert!(!b.is_compilable(), "a block with an undecoded word must not be compiled");
+    assert!(
+        !b.is_compilable(),
+        "a block with an undecoded word must not be compiled"
+    );
     assert!(matches!(b.instructions[0].2, Instr::Unknown { .. }));
 }
 
@@ -136,7 +146,10 @@ fn a_backwards_branch_to_an_earlier_instruction_is_a_negative_target() {
     // `b .-4` at offset 0 aims before the region: reported as an external, not followed.
     let words = [0x17FF_FFFF];
     let p = block::scan(&words);
-    assert_eq!(p.block_at(0).expect("block at 0").exit, Exit::Direct { target: -4 });
+    assert_eq!(
+        p.block_at(0).expect("block at 0").exit,
+        Exit::Direct { target: -4 }
+    );
     assert_eq!(p.externals, vec![-4]);
 }
 
@@ -148,7 +161,11 @@ fn a_backward_branch_into_the_region_splits_a_block_at_the_target() {
     let p = block::scan(&words);
     let starts: Vec<i64> = p.blocks.keys().copied().collect();
     assert_eq!(starts, vec![0, 4, 12]);
-    assert_eq!(p.instruction_count(), 4, "no word may be lost or duplicated");
+    assert_eq!(
+        p.instruction_count(),
+        4,
+        "no word may be lost or duplicated"
+    );
 }
 
 #[test]
@@ -183,10 +200,16 @@ fn scan_at_agrees_with_scan_wherever_a_terminator_closes_the_block() {
             continue;
         }
         let got = block::scan_at(*start, reader(&PROGRAM, 0), 64).expect("block here");
-        assert_eq!(&got, expected, "scan_at disagrees with scan at offset {start}");
+        assert_eq!(
+            &got, expected,
+            "scan_at disagrees with scan at offset {start}"
+        );
         compared += 1;
     }
-    assert_eq!(compared, 3, "the three terminated blocks were actually compared");
+    assert_eq!(
+        compared, 3,
+        "the three terminated blocks were actually compared"
+    );
 }
 
 #[test]
@@ -203,14 +226,19 @@ fn scan_at_extends_past_a_boundary_scan_knew_about_and_the_cache_must_drop_it() 
     assert_eq!(short.len(), 1);
     assert_eq!(long.len(), 2);
     assert_eq!(long.exit, Exit::Return);
-    assert!(long.end > p.blocks.keys().copied().find(|k| *k > 16).unwrap(),
-        "the longer block reaches past the next known start, which is why invalidation exists");
+    assert!(
+        long.end > p.blocks.keys().copied().find(|k| *k > 16).unwrap(),
+        "the longer block reaches past the next known start, which is why invalidation exists"
+    );
 }
 
 #[test]
 fn scan_at_at_an_unmapped_address_returns_none_not_an_empty_block() {
     let got = block::scan_at(0x1000, reader(&PROGRAM, 0), 64);
-    assert!(got.is_none(), "an unmapped address is no block, never an empty one");
+    assert!(
+        got.is_none(),
+        "an unmapped address is no block, never an empty one"
+    );
 }
 
 #[test]
@@ -238,8 +266,15 @@ fn scan_at_reports_absolute_guest_offsets() {
     // The same program based at 0x1000: the epilogue writes pc verbatim, so offsets must be absolute.
     let got = block::scan_at(0x1000, reader(&PROGRAM, 0x1000), 64).expect("block at 0x1000");
     assert_eq!(got.start, 0x1000);
-    assert_eq!(got.instructions[0].0, 0x1000, "first instruction is at the guest address");
-    assert_eq!(got.instructions.last().unwrap().0, 0x1008, "cbz sits at 0x1008");
+    assert_eq!(
+        got.instructions[0].0, 0x1000,
+        "first instruction is at the guest address"
+    );
+    assert_eq!(
+        got.instructions.last().unwrap().0,
+        0x1008,
+        "cbz sits at 0x1008"
+    );
     assert_eq!(got.end, 0x100c);
 
     // A direct branch's target must also be absolute: `b #8` at 0x100c jumps to 0x1014.

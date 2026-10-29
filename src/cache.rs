@@ -37,7 +37,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::cursor::Cursor;
-use crate::env::{Environment, EnvParseError};
+use crate::env::{EnvParseError, Environment};
 
 pub use crate::env::EnvParseError as ParseEnvError;
 
@@ -134,7 +134,10 @@ impl fmt::Display for DamageKind {
                 write!(f, "cache version {found}, this build reads {expected}")
             }
             Self::BadEnvCount { found } => {
-                write!(f, "record declares {found} environments (allowed 1..={MAX_ENVS})")
+                write!(
+                    f,
+                    "record declares {found} environments (allowed 1..={MAX_ENVS})"
+                )
             }
             Self::Truncated { needed, remaining } => {
                 write!(f, "record needs {needed} more bytes, {remaining} remain")
@@ -191,9 +194,7 @@ pub fn parse(bytes: &[u8]) -> ParsedCache {
                 records: Vec::new(),
                 damage: Some(Damage {
                     offset: 0,
-                    reason: DamageKind::ShortHeader {
-                        have: bytes.len(),
-                    },
+                    reason: DamageKind::ShortHeader { have: bytes.len() },
                 }),
                 consumed: 0,
             };
@@ -216,9 +217,7 @@ pub fn parse(bytes: &[u8]) -> ParsedCache {
                 records: Vec::new(),
                 damage: Some(Damage {
                     offset: 8,
-                    reason: DamageKind::ShortHeader {
-                        have: bytes.len(),
-                    },
+                    reason: DamageKind::ShortHeader { have: bytes.len() },
                 }),
                 consumed: 8,
             };
@@ -350,13 +349,11 @@ pub fn repair_file(path: &Path, parsed: &ParsedCache, repair: Repair) -> io::Res
             write_atomic(path, &image)?;
             Ok(parsed.records.len())
         }
-        Repair::Discard => {
-            match fs::remove_file(path) {
-                Ok(()) => Ok(0),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
-                Err(e) => Err(e),
-            }
-        }
+        Repair::Discard => match fs::remove_file(path) {
+            Ok(()) => Ok(0),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(e),
+        },
     }
 }
 

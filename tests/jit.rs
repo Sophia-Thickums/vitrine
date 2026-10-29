@@ -61,13 +61,17 @@ fn compiled_arithmetic_agrees_with_the_interpreter() {
         "csel_eq",
         "udiv_by_zero",
     ] {
-        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let words = programs()
+            .remove(name)
+            .unwrap_or_else(|| panic!("fixture {name}"));
         let mut memory = vec![0u8; 0x2000];
-        let jit_state = run_jit(&words, &mut memory, 0x1800, 200).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let jit_state =
+            run_jit(&words, &mut memory, 0x1800, 200).unwrap_or_else(|e| panic!("{name}: {e}"));
         let interp_state = run_interp(&words, 0x1800);
 
         assert_eq!(
-            jit_state.x, interp_state.x,
+            jit_state.x,
+            interp_state.x,
             "{name}: register file differs\n jit {:x?}\n int {:x?}",
             &jit_state.x[..8],
             &interp_state.x[..8]
@@ -75,7 +79,12 @@ fn compiled_arithmetic_agrees_with_the_interpreter() {
         assert_eq!(jit_state.sp, interp_state.sp, "{name}: sp differs");
         assert_eq!(
             jit_state.get_flags(),
-            (interp_state.n, interp_state.z, interp_state.c, interp_state.v),
+            (
+                interp_state.n,
+                interp_state.z,
+                interp_state.c,
+                interp_state.v
+            ),
             "{name}: flags differ"
         );
     }
@@ -84,9 +93,12 @@ fn compiled_arithmetic_agrees_with_the_interpreter() {
 #[test]
 fn compiled_loops_and_branches_agree_with_the_interpreter() {
     for (name, limit) in [("loop_with_cbz", 200u64), ("compare_and_branch", 100)] {
-        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let words = programs()
+            .remove(name)
+            .unwrap_or_else(|| panic!("fixture {name}"));
         let mut memory = vec![0u8; 0x2000];
-        let jit_state = run_jit(&words, &mut memory, 0x1800, limit).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let jit_state =
+            run_jit(&words, &mut memory, 0x1800, limit).unwrap_or_else(|e| panic!("{name}: {e}"));
         let interp_state = run_interp(&words, 0x1800);
         assert_eq!(jit_state.x, interp_state.x, "{name}: register file differs");
     }
@@ -111,8 +123,15 @@ fn compiled_memory_access_agrees_with_the_interpreter() {
         interp_machine.step().expect("interpreter step");
     }
 
-    assert_eq!(state.x[1..=3], interp_machine.x[1..=3], "registers after the pair");
-    assert_eq!(state.x[2], interp_machine.x[2], "post-index write-back must match");
+    assert_eq!(
+        state.x[1..=3],
+        interp_machine.x[1..=3],
+        "registers after the pair"
+    );
+    assert_eq!(
+        state.x[2], interp_machine.x[2],
+        "post-index write-back must match"
+    );
     let offset = 0x808usize;
     assert_eq!(
         &jit_memory[offset..offset + 8],
@@ -124,9 +143,12 @@ fn compiled_memory_access_agrees_with_the_interpreter() {
 #[test]
 fn compiled_tbz_and_adr_agree_with_the_interpreter() {
     for name in ["tbz_branch", "adr_page"] {
-        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let words = programs()
+            .remove(name)
+            .unwrap_or_else(|| panic!("fixture {name}"));
         let mut memory = vec![0u8; 0x2000];
-        let state = run_jit(&words, &mut memory, 0x1800, 100).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let state =
+            run_jit(&words, &mut memory, 0x1800, 100).unwrap_or_else(|e| panic!("{name}: {e}"));
         let interp = run_interp(&words, 0x1800);
         assert_eq!(state.x, interp.x, "{name}: register file differs");
     }
@@ -167,9 +189,12 @@ fn a_thousand_iteration_loop_agrees_with_the_interpreter() {
 #[test]
 fn compiled_floating_point_agrees_with_the_interpreter() {
     for name in ["fp_add", "fp_mul_div"] {
-        let words = programs().remove(name).unwrap_or_else(|| panic!("fixture {name}"));
+        let words = programs()
+            .remove(name)
+            .unwrap_or_else(|| panic!("fixture {name}"));
         let mut memory = vec![0u8; 0x2000];
-        let state = run_jit(&words, &mut memory, 0x1800, 200).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let state =
+            run_jit(&words, &mut memory, 0x1800, 200).unwrap_or_else(|e| panic!("{name}: {e}"));
         let interp = run_interp(&words, 0x1800);
         assert_eq!(state.x, interp.x, "{name}: register file differs");
         assert_eq!(state.fp, interp.fp, "{name}: FP register file differs");
@@ -190,10 +215,21 @@ fn a_load_past_the_end_of_the_window_aborts_instead_of_reading_host_memory() {
     state.x[1] = 60; // 60..68 in a 64-byte window
     jit::run(program, &mut memory, &mut state, 8).expect("driver returns rather than dying");
 
-    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64, "last exit is a data abort");
-    assert_eq!(state.pc, 0, "pc points at the faulting instruction, so it can be retried");
+    assert_eq!(
+        state.last_exit,
+        jit::Exit::DataAbort as u64,
+        "last exit is a data abort"
+    );
+    assert_eq!(
+        state.pc, 0,
+        "pc points at the faulting instruction, so it can be retried"
+    );
     let base = memory.as_ptr() as u64;
-    assert_eq!(state.fault_addr, base + 60, "the faulting host address is recorded");
+    assert_eq!(
+        state.fault_addr,
+        base + 60,
+        "the faulting host address is recorded"
+    );
 }
 
 #[test]
@@ -207,7 +243,11 @@ fn a_load_entirely_inside_the_window_still_runs() {
     state.x[0] = 0;
     jit::run(program, &mut memory, &mut state, 8).expect("runs");
 
-    assert_ne!(state.last_exit, jit::Exit::DataAbort as u64, "in-bounds access must not abort");
+    assert_ne!(
+        state.last_exit,
+        jit::Exit::DataAbort as u64,
+        "in-bounds access must not abort"
+    );
 }
 
 #[test]
@@ -224,14 +264,24 @@ fn a_pair_access_straddling_the_end_aborts_on_the_second_half() {
     state.x[2] = 56;
     jit::run(program, &mut memory, &mut state, 8).expect("driver returns");
 
-    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64,
-        "the second half of the pair is past the window, so the pair must abort");
-    assert_eq!(state.fault_addr, memory.as_ptr() as u64 + 56,
-        "the faulting address is the base of the pair");
+    assert_eq!(
+        state.last_exit,
+        jit::Exit::DataAbort as u64,
+        "the second half of the pair is past the window, so the pair must abort"
+    );
+    assert_eq!(
+        state.fault_addr,
+        memory.as_ptr() as u64 + 56,
+        "the faulting address is the base of the pair"
+    );
 
     // And the same pair fully in bounds still runs.
     let mut state2 = JitState::new(0, 0);
     state2.x[2] = 40;
     jit::run(program, &mut memory, &mut state2, 8).expect("driver returns");
-    assert_ne!(state2.last_exit, jit::Exit::DataAbort as u64, "in-bounds pair must not abort");
+    assert_ne!(
+        state2.last_exit,
+        jit::Exit::DataAbort as u64,
+        "in-bounds pair must not abort"
+    );
 }

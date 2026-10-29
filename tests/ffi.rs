@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use vitrine::cache::{self, KEY_LEN, Record};
-use vitrine::env::{Environment, Maps, Stage, SPH_BYTES};
+use vitrine::env::{Environment, Maps, SPH_BYTES, Stage};
 use vitrine::ffi::{
     CEntry, PendingPipeline, Report, VITRINE_ERR_BAD_ARGUMENT, VITRINE_OK, VITRINE_WARN_DAMAGED,
     vitrine_cache_append, vitrine_cache_inspect, vitrine_cache_repair, vitrine_report_free,
@@ -60,7 +60,11 @@ fn version_is_a_valid_c_string() {
 #[test]
 fn inspect_reports_a_clean_cache() {
     let path = tmpdir().join("ffi-clean.bin");
-    let record = Record { offset: 0, envs: vec![fixture_env()], key: [1; KEY_LEN] };
+    let record = Record {
+        offset: 0,
+        envs: vec![fixture_env()],
+        key: [1; KEY_LEN],
+    };
     fs::write(&path, cache::serialize(&[record])).unwrap();
     let c = cstr(&path);
 
@@ -77,7 +81,11 @@ fn inspect_reports_a_clean_cache() {
 #[test]
 fn inspect_reports_damage_with_an_offset() {
     let path = tmpdir().join("ffi-damaged.bin");
-    let record = Record { offset: 0, envs: vec![fixture_env()], key: [1; KEY_LEN] };
+    let record = Record {
+        offset: 0,
+        envs: vec![fixture_env()],
+        key: [1; KEY_LEN],
+    };
     let mut bytes = cache::serialize(&[record.clone(), record]);
     bytes.truncate(bytes.len() - 5);
     fs::write(&path, &bytes).unwrap();
@@ -115,7 +123,11 @@ fn inspect_on_a_missing_file_is_clean_and_empty() {
 #[test]
 fn repair_through_the_abi_keeps_the_good_records() {
     let path = tmpdir().join("ffi-repair.bin");
-    let record = Record { offset: 0, envs: vec![fixture_env()], key: [2; KEY_LEN] };
+    let record = Record {
+        offset: 0,
+        envs: vec![fixture_env()],
+        key: [2; KEY_LEN],
+    };
     let mut bytes = cache::serialize(&[record.clone(), record]);
     bytes.truncate(bytes.len() - 5);
     fs::write(&path, &bytes).unwrap();
@@ -131,7 +143,10 @@ fn repair_through_the_abi_keeps_the_good_records() {
     unsafe { vitrine_report_free(&mut report) };
 
     let after = cache::parse_file(&path).unwrap();
-    assert!(after.is_clean(), "repair through the ABI must leave a valid file");
+    assert!(
+        after.is_clean(),
+        "repair through the ABI must leave a valid file"
+    );
     assert_eq!(after.records.len(), 1);
 }
 
@@ -177,16 +192,34 @@ fn append_rejects_null_arguments_with_an_error_code() {
     let path = tmpdir().join("ffi-null.bin");
     let c = cstr(&path);
     // SAFETY: null pipeline is documented as an error.
-    assert_eq!(unsafe { vitrine_cache_append(c.as_ptr(), std::ptr::null()) }, VITRINE_ERR_BAD_ARGUMENT);
+    assert_eq!(
+        unsafe { vitrine_cache_append(c.as_ptr(), std::ptr::null()) },
+        VITRINE_ERR_BAD_ARGUMENT
+    );
     // SAFETY: null path is documented as an error.
     let entry = CEntry {
-        local_memory_size: 0, texture_bound: 0, start_address: 0, cached_lowest: 0,
-        cached_highest: 0, viewport_transform_state: 1, stage: 4,
-        code: std::ptr::null(), code_word_count: 0, workgroup_size: [0; 3], shared_memory_size: 0,
+        local_memory_size: 0,
+        texture_bound: 0,
+        start_address: 0,
+        cached_lowest: 0,
+        cached_highest: 0,
+        viewport_transform_state: 1,
+        stage: 4,
+        code: std::ptr::null(),
+        code_word_count: 0,
+        workgroup_size: [0; 3],
+        shared_memory_size: 0,
     };
-    let pipeline = PendingPipeline { key: [0; KEY_LEN], envs: &entry, env_count: 1 };
+    let pipeline = PendingPipeline {
+        key: [0; KEY_LEN],
+        envs: &entry,
+        env_count: 1,
+    };
     // SAFETY: null path is documented as an error.
-    assert_eq!(unsafe { vitrine_cache_append(std::ptr::null(), &pipeline) }, VITRINE_ERR_BAD_ARGUMENT);
+    assert_eq!(
+        unsafe { vitrine_cache_append(std::ptr::null(), &pipeline) },
+        VITRINE_ERR_BAD_ARGUMENT
+    );
 }
 
 #[test]
@@ -213,8 +246,8 @@ fn an_empty_report_has_no_handle() {
 
 use vitrine::ffi::{
     CContentEntry, CReject, CSelectResult, CWarning, VITRINE_REJECT_SUPERSEDED,
-    VITRINE_TYPE_APPLICATION, VITRINE_TYPE_PATCH, VITRINE_WARN_ORPHAN_DLC,
-    VITRINE_TYPE_ADD_ON_CONTENT, vitrine_content_select,
+    VITRINE_TYPE_ADD_ON_CONTENT, VITRINE_TYPE_APPLICATION, VITRINE_TYPE_PATCH,
+    VITRINE_WARN_ORPHAN_DLC, vitrine_content_select,
 };
 
 const BASE: u64 = 0x0100_0000_0001_0000;
@@ -223,29 +256,64 @@ const PATCH: u64 = BASE + 0x800;
 #[test]
 fn selection_through_the_abi_picks_the_highest_version() {
     let entries = [
-        CContentEntry { title_id: BASE, version: 0, title_type: VITRINE_TYPE_APPLICATION, source: 1 },
-        CContentEntry { title_id: PATCH, version: 0x20000, title_type: VITRINE_TYPE_PATCH, source: 2 },
-        CContentEntry { title_id: PATCH, version: 0x30000, title_type: VITRINE_TYPE_PATCH, source: 3 },
+        CContentEntry {
+            title_id: BASE,
+            version: 0,
+            title_type: VITRINE_TYPE_APPLICATION,
+            source: 1,
+        },
+        CContentEntry {
+            title_id: PATCH,
+            version: 0x20000,
+            title_type: VITRINE_TYPE_PATCH,
+            source: 2,
+        },
+        CContentEntry {
+            title_id: PATCH,
+            version: 0x30000,
+            title_type: VITRINE_TYPE_PATCH,
+            source: 3,
+        },
     ];
-    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 8];
+    let mut chosen = vec![
+        CContentEntry {
+            title_id: 0,
+            version: 0,
+            title_type: 0,
+            source: 0
+        };
+        8
+    ];
     let mut rejects = Vec::<CReject>::new();
     let mut warnings = Vec::<CWarning>::new();
-    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut out = CSelectResult {
+        chosen_count: 0,
+        rejected_count: 0,
+        warning_count: 0,
+        truncated: 0,
+    };
 
     // SAFETY: entries is live; the output arrays have the capacities passed.
     let n = unsafe {
         vitrine_content_select(
-            entries.as_ptr(), entries.len(),
-            chosen.as_mut_ptr(), chosen.len(),
-            rejects.as_mut_ptr(), 0,
-            warnings.as_mut_ptr(), 0,
+            entries.as_ptr(),
+            entries.len(),
+            chosen.as_mut_ptr(),
+            chosen.len(),
+            rejects.as_mut_ptr(),
+            0,
+            warnings.as_mut_ptr(),
+            0,
             &mut out,
         )
     };
     assert_eq!(n, 2);
     assert_eq!(out.chosen_count, 2);
     assert_eq!(out.rejected_count, 1, "the older patch is superseded");
-    assert_eq!(out.truncated, 1, "zero-cap rejects array must report truncation");
+    assert_eq!(
+        out.truncated, 1,
+        "zero-cap rejects array must report truncation"
+    );
 
     let patch = chosen
         .iter()
@@ -259,50 +327,118 @@ fn title_type_crosses_the_boundary_as_the_cnmt_byte_not_a_variant_index() {
     // Regression test for a real bug: `enum as u32` yields 0..=3, not 0x80..=0x83, so the C side
     // saw every entry as unknown and selection silently returned nothing.
     let entries = [
-        CContentEntry { title_id: BASE, version: 0, title_type: VITRINE_TYPE_APPLICATION, source: 1 },
-        CContentEntry { title_id: PATCH, version: 5, title_type: VITRINE_TYPE_PATCH, source: 2 },
+        CContentEntry {
+            title_id: BASE,
+            version: 0,
+            title_type: VITRINE_TYPE_APPLICATION,
+            source: 1,
+        },
+        CContentEntry {
+            title_id: PATCH,
+            version: 5,
+            title_type: VITRINE_TYPE_PATCH,
+            source: 2,
+        },
     ];
-    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 4];
-    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut chosen = vec![
+        CContentEntry {
+            title_id: 0,
+            version: 0,
+            title_type: 0,
+            source: 0
+        };
+        4
+    ];
+    let mut out = CSelectResult {
+        chosen_count: 0,
+        rejected_count: 0,
+        warning_count: 0,
+        truncated: 0,
+    };
     let mut rej = Vec::<CReject>::new();
     let mut warn = Vec::<CWarning>::new();
     // SAFETY: entries live; outputs sized.
     let n = unsafe {
         vitrine_content_select(
-            entries.as_ptr(), entries.len(),
-            chosen.as_mut_ptr(), chosen.len(),
-            rej.as_mut_ptr(), 0,
-            warn.as_mut_ptr(), 0,
+            entries.as_ptr(),
+            entries.len(),
+            chosen.as_mut_ptr(),
+            chosen.len(),
+            rej.as_mut_ptr(),
+            0,
+            warn.as_mut_ptr(),
+            0,
             &mut out,
         )
     };
     assert_eq!(n, 2, "both entries must be recognisable");
-    let types: Vec<u32> = chosen[..out.chosen_count].iter().map(|e| e.title_type).collect();
-    assert!(types.contains(&0x80), "application byte must survive: {types:?}");
+    let types: Vec<u32> = chosen[..out.chosen_count]
+        .iter()
+        .map(|e| e.title_type)
+        .collect();
+    assert!(
+        types.contains(&0x80),
+        "application byte must survive: {types:?}"
+    );
     assert!(types.contains(&0x81), "patch byte must survive: {types:?}");
 }
 
 #[test]
 fn rejects_carry_the_version_that_won() {
     let entries = [
-        CContentEntry { title_id: PATCH, version: 0x10000, title_type: VITRINE_TYPE_PATCH, source: 1 },
-        CContentEntry { title_id: PATCH, version: 0x90000, title_type: VITRINE_TYPE_PATCH, source: 2 },
+        CContentEntry {
+            title_id: PATCH,
+            version: 0x10000,
+            title_type: VITRINE_TYPE_PATCH,
+            source: 1,
+        },
+        CContentEntry {
+            title_id: PATCH,
+            version: 0x90000,
+            title_type: VITRINE_TYPE_PATCH,
+            source: 2,
+        },
     ];
-    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 4];
-    let mut rejects = vec![CReject {
-        entry: CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 },
-        reason: 99,
-        chosen_version: 0,
-    }; 4];
+    let mut chosen = vec![
+        CContentEntry {
+            title_id: 0,
+            version: 0,
+            title_type: 0,
+            source: 0
+        };
+        4
+    ];
+    let mut rejects = vec![
+        CReject {
+            entry: CContentEntry {
+                title_id: 0,
+                version: 0,
+                title_type: 0,
+                source: 0
+            },
+            reason: 99,
+            chosen_version: 0,
+        };
+        4
+    ];
     let mut warnings = Vec::<CWarning>::new();
-    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut out = CSelectResult {
+        chosen_count: 0,
+        rejected_count: 0,
+        warning_count: 0,
+        truncated: 0,
+    };
     // SAFETY: all arrays live with the stated capacities.
     unsafe {
         vitrine_content_select(
-            entries.as_ptr(), entries.len(),
-            chosen.as_mut_ptr(), chosen.len(),
-            rejects.as_mut_ptr(), rejects.len(),
-            warnings.as_mut_ptr(), 0,
+            entries.as_ptr(),
+            entries.len(),
+            chosen.as_mut_ptr(),
+            chosen.len(),
+            rejects.as_mut_ptr(),
+            rejects.len(),
+            warnings.as_mut_ptr(),
+            0,
             &mut out,
         )
     };
@@ -320,17 +456,41 @@ fn orphan_dlc_warning_crosses_the_abi() {
         title_type: VITRINE_TYPE_ADD_ON_CONTENT,
         source: 7,
     }];
-    let mut chosen = vec![CContentEntry { title_id: 0, version: 0, title_type: 0, source: 0 }; 2];
+    let mut chosen = vec![
+        CContentEntry {
+            title_id: 0,
+            version: 0,
+            title_type: 0,
+            source: 0
+        };
+        2
+    ];
     let mut rejects = Vec::<CReject>::new();
-    let mut warnings = vec![CWarning { kind: 99, title_id: 0, version: 0 }; 2];
-    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut warnings = vec![
+        CWarning {
+            kind: 99,
+            title_id: 0,
+            version: 0
+        };
+        2
+    ];
+    let mut out = CSelectResult {
+        chosen_count: 0,
+        rejected_count: 0,
+        warning_count: 0,
+        truncated: 0,
+    };
     // SAFETY: all arrays live with the stated capacities.
     unsafe {
         vitrine_content_select(
-            entries.as_ptr(), entries.len(),
-            chosen.as_mut_ptr(), chosen.len(),
-            rejects.as_mut_ptr(), 0,
-            warnings.as_mut_ptr(), warnings.len(),
+            entries.as_ptr(),
+            entries.len(),
+            chosen.as_mut_ptr(),
+            chosen.len(),
+            rejects.as_mut_ptr(),
+            0,
+            warnings.as_mut_ptr(),
+            warnings.len(),
             &mut out,
         )
     };
@@ -341,14 +501,23 @@ fn orphan_dlc_warning_crosses_the_abi() {
 
 #[test]
 fn selection_rejects_null_pointers() {
-    let mut out = CSelectResult { chosen_count: 0, rejected_count: 0, warning_count: 0, truncated: 0 };
+    let mut out = CSelectResult {
+        chosen_count: 0,
+        rejected_count: 0,
+        warning_count: 0,
+        truncated: 0,
+    };
     // SAFETY: null entries is documented as an error, not a crash.
     let code = unsafe {
         vitrine_content_select(
-            std::ptr::null(), 1,
-            std::ptr::null_mut(), 0,
-            std::ptr::null_mut(), 0,
-            std::ptr::null_mut(), 0,
+            std::ptr::null(),
+            1,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
             &mut out,
         )
     };
@@ -357,15 +526,24 @@ fn selection_rejects_null_pointers() {
 
 #[test]
 fn selection_of_nothing_is_zero_and_clean() {
-    let mut out = CSelectResult { chosen_count: 9, rejected_count: 9, warning_count: 9, truncated: 9 };
+    let mut out = CSelectResult {
+        chosen_count: 9,
+        rejected_count: 9,
+        warning_count: 9,
+        truncated: 9,
+    };
     // SAFETY: a null entries pointer with count 0 is rejected by the null check, so pass a real one.
     let empty: [CContentEntry; 0] = [];
     let code = unsafe {
         vitrine_content_select(
-            empty.as_ptr(), 0,
-            std::ptr::null_mut(), 0,
-            std::ptr::null_mut(), 0,
-            std::ptr::null_mut(), 0,
+            empty.as_ptr(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            0,
             &mut out,
         )
     };
@@ -441,7 +619,11 @@ mod jit_abi {
         unsafe {
             let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
             let r = ffi::vitrine_jit_run(jit, 1);
-            assert_ne!(r.status, ffi::VITRINE_OK, "an unmapped fetch is a refusal, not a run");
+            assert_ne!(
+                r.status,
+                ffi::VITRINE_OK,
+                "an unmapped fetch is a refusal, not a run"
+            );
             assert_eq!(r.executed, 0);
             ffi::vitrine_jit_free(jit);
         }
@@ -456,7 +638,11 @@ mod jit_abi {
             let _ = ffi::vitrine_jit_run(jit, 1);
             assert_eq!(ffi::vitrine_jit_cache_len(jit), 1, "one block cached");
 
-            assert_eq!(ffi::vitrine_jit_invalidate(jit, 0, 4), 1, "the range contains the block start");
+            assert_eq!(
+                ffi::vitrine_jit_invalidate(jit, 0, 4),
+                1,
+                "the range contains the block start"
+            );
             assert_eq!(ffi::vitrine_jit_cache_len(jit), 0, "and it is gone");
 
             // Re-run from the same pc: it must translate again rather than find a stale entry.
@@ -467,7 +653,6 @@ mod jit_abi {
             ffi::vitrine_jit_free(jit);
         }
     }
-
 
     #[test]
     fn step_retires_exactly_one_instruction_and_does_not_use_the_cache() {
@@ -483,16 +668,31 @@ mod jit_abi {
 
             // Stepping must not leave a one-instruction translation in the real cache: it would
             // sit at the address the full block belongs to and be used for the next RunThread.
-            assert_eq!(ffi::vitrine_jit_cache_len(jit), 0, "step translates uncached");
+            assert_eq!(
+                ffi::vitrine_jit_cache_len(jit),
+                0,
+                "step translates uncached"
+            );
 
             let second = ffi::vitrine_jit_step(jit);
-            assert_eq!(second.pc, 8, "second step lands ON the svc, having executed the add");
-            assert_eq!(second.exit_code, jit::Exit::Next as u32, "the add is not a supervisor call");
+            assert_eq!(
+                second.pc, 8,
+                "second step lands ON the svc, having executed the add"
+            );
+            assert_eq!(
+                second.exit_code,
+                jit::Exit::Next as u32,
+                "the add is not a supervisor call"
+            );
 
             // Third step is the `ret` (this fixture is mov, add, ret — the SVC path is exercised
             // in the C++ adapter check, which has its own program).
             let third = ffi::vitrine_jit_step(jit);
-            assert_eq!(third.exit_code, jit::Exit::Jumped as u32, "a return reports a jump");
+            assert_eq!(
+                third.exit_code,
+                jit::Exit::Jumped as u32,
+                "a return reports a jump"
+            );
             assert_eq!(third.pc, 0x10000, "and pc followed x30");
             ffi::vitrine_jit_free(jit);
         }
@@ -506,8 +706,11 @@ mod jit_abi {
             let jit = ffi::vitrine_jit_new(&state, read_word, std::ptr::null_mut());
             let _ = ffi::vitrine_jit_run(jit, 1);
             // The block spans [0, 12). Invalidate only its last instruction.
-            assert_eq!(ffi::vitrine_jit_invalidate(jit, 8, 4), 1,
-                "overlap is what makes a translation stale, not containment of its start");
+            assert_eq!(
+                ffi::vitrine_jit_invalidate(jit, 8, 4),
+                1,
+                "overlap is what makes a translation stale, not containment of its start"
+            );
             assert_eq!(ffi::vitrine_jit_cache_len(jit), 0);
             ffi::vitrine_jit_free(jit);
         }

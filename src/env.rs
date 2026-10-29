@@ -172,7 +172,12 @@ impl Environment {
             + if self.stage.is_compute() {
                 16
             } else {
-                SPH_BYTES + if self.stage.is_geometry() { GP_PASSTHROUGH_BYTES } else { 0 }
+                SPH_BYTES
+                    + if self.stage.is_geometry() {
+                        GP_PASSTHROUGH_BYTES
+                    } else {
+                        0
+                    }
             }
     }
 
@@ -197,7 +202,13 @@ impl Environment {
         }
         // Each map entry is 8 bytes. Refuse counts that could not possibly fit in what remains,
         // before allocating anything sized by an attacker-controlled (or corrupt) integer.
-        for count in [n_tex_types, n_tex_formats, n_cbuf_values, n_cbuf_repl, n_cbuf_sizes] {
+        for count in [
+            n_tex_types,
+            n_tex_formats,
+            n_cbuf_values,
+            n_cbuf_repl,
+            n_cbuf_sizes,
+        ] {
             if count > cursor.len() / 8 {
                 return Err(EnvParseError::MapTooLarge {
                     count,
@@ -261,7 +272,11 @@ impl Environment {
             workgroup_size = Some([x, y, z]);
             shared_memory_size = Some(cursor.u32().map_err(|_| short(4, cursor))?);
         } else {
-            sph = Some(cursor.take::<SPH_BYTES>().map_err(|_| short(SPH_BYTES, cursor))?);
+            sph = Some(
+                cursor
+                    .take::<SPH_BYTES>()
+                    .map_err(|_| short(SPH_BYTES, cursor))?,
+            );
             if stage.is_geometry() {
                 gp_passthrough_mask = Some(
                     cursor
@@ -336,7 +351,9 @@ impl Environment {
             let sph = self.sph.unwrap_or([0; SPH_BYTES]);
             out.extend_from_slice(&sph);
             if self.stage.is_geometry() {
-                let gp = self.gp_passthrough_mask.unwrap_or([0; GP_PASSTHROUGH_BYTES]);
+                let gp = self
+                    .gp_passthrough_mask
+                    .unwrap_or([0; GP_PASSTHROUGH_BYTES]);
                 out.extend_from_slice(&gp);
             }
         }
@@ -398,5 +415,4 @@ impl fmt::Display for EnvParseError {
     }
 }
 
-impl std::error::Error for EnvParseError {
-}
+impl std::error::Error for EnvParseError {}

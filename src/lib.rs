@@ -33,22 +33,22 @@
 
 pub mod a64;
 pub mod block;
-pub mod interp;
-pub mod jit;
-pub mod x86;
 pub mod cache;
 pub mod content;
 pub mod cursor;
 pub mod env;
 pub mod ffi;
+pub mod interp;
+pub mod jit;
+pub mod x86;
 
+pub use block::{Block, Exit, Program, scan};
 pub use cache::{
     CACHE_VERSION, Damage, DamageKind, KEY_LEN, MAGIC, MAX_ENVS, ParsedCache, Record, Repair,
     append_file, parse, parse_file, repair_file, serialize,
 };
-pub use block::{Block, Exit, Program, scan};
 pub use content::{Entry, Rejected, Selection, TitleType, Warning, base_title_id, select};
-pub use env::{Environment, EnvParseError, Maps, Stage};
+pub use env::{EnvParseError, Environment, Maps, Stage};
 
 /// The crate version, exposed to C++ for logging and for `hermes doctor`-style checks.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

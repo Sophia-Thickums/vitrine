@@ -155,7 +155,9 @@ fn run_case(asm: &str) -> Result<(i32, i32), String> {
     }
     let mut words = Vec::new();
     for line in text.lines() {
-        let Some(start) = line.find("encoding: [") else { continue };
+        let Some(start) = line.find("encoding: [") else {
+            continue;
+        };
         let end = line[start..].find(']').ok_or("bad encoding")? + start;
         let bytes: Vec<u8> = line[start + 11..end]
             .split(',')
@@ -181,11 +183,8 @@ fn run_case(asm: &str) -> Result<(i32, i32), String> {
     let dir = std::env::temp_dir().join("vitrine-qemu");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let asm_path = dir.join("case.s");
-    std::fs::write(
-        &asm_path,
-        format!(".globl _start\n_start:\n{asm}\n"),
-    )
-    .map_err(|e| e.to_string())?;
+    std::fs::write(&asm_path, format!(".globl _start\n_start:\n{asm}\n"))
+        .map_err(|e| e.to_string())?;
     let elf = dir.join("case.elf");
     let status = Command::new("clang")
         .args([

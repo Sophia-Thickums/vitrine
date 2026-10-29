@@ -69,7 +69,6 @@ pub const AOC_TITLE_ID_OFFSET: u64 = 0x1000;
 /// Mask that recovers the DLC index from an add-on title id. From Citron's `AOC_TITLE_ID_MASK`.
 pub const AOC_TITLE_ID_MASK: u64 = 0x7FF;
 
-
 /// What a CNMT describes itself as.
 ///
 /// Mirrors `TitleType` in `src/core/file_sys/cnmt.h`.
@@ -218,9 +217,7 @@ impl Selection {
     pub fn dlc(&self, base: u64) -> Vec<&Entry> {
         self.chosen
             .values()
-            .filter(|e| {
-                e.title_type == TitleType::AddOnContent && e.base_title_id() == base
-            })
+            .filter(|e| e.title_type == TitleType::AddOnContent && e.base_title_id() == base)
             .collect()
     }
 

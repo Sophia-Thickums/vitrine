@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use vitrine::cache::{
     self, CACHE_VERSION, Damage, DamageKind, KEY_LEN, MAGIC, MAX_ENVS, ParsedCache, Record, Repair,
 };
-use vitrine::env::{Environment, Maps, Stage, SPH_BYTES};
+use vitrine::env::{Environment, Maps, SPH_BYTES, Stage};
 
 // -- fixtures ---------------------------------------------------------------
 
@@ -102,8 +102,16 @@ fn records_round_trip_byte_for_byte() {
 #[test]
 fn compute_and_geometry_stages_round_trip() {
     let records = vec![
-        Record { offset: 0, envs: vec![compute_env()], key: [9; KEY_LEN] },
-        Record { offset: 0, envs: vec![geometry_env()], key: [8; KEY_LEN] },
+        Record {
+            offset: 0,
+            envs: vec![compute_env()],
+            key: [9; KEY_LEN],
+        },
+        Record {
+            offset: 0,
+            envs: vec![geometry_env()],
+            key: [8; KEY_LEN],
+        },
     ];
     let bytes = cache::serialize(&records);
     let parsed = cache::parse(&bytes);
@@ -111,7 +119,10 @@ fn compute_and_geometry_stages_round_trip() {
     assert_eq!(parsed.records.len(), 2);
     assert_eq!(parsed.records[0].envs[0].workgroup_size, Some([8, 4, 1]));
     assert_eq!(parsed.records[0].envs[0].shared_memory_size, Some(1024));
-    assert_eq!(parsed.records[1].envs[0].gp_passthrough_mask, Some([7u8; 32]));
+    assert_eq!(
+        parsed.records[1].envs[0].gp_passthrough_mask,
+        Some([7u8; 32])
+    );
     assert_eq!(cache::serialize(&parsed.records), bytes);
 }
 
@@ -141,11 +152,25 @@ fn serialization_is_order_independent_of_map_insertion() {
     for i in [9u32, 3, 5, 1] {
         b.texture_types.insert(i, i * 2);
     }
-    let e1 = Environment { maps: a, ..env_fragment() };
-    let e2 = Environment { maps: b, ..env_fragment() };
+    let e1 = Environment {
+        maps: a,
+        ..env_fragment()
+    };
+    let e2 = Environment {
+        maps: b,
+        ..env_fragment()
+    };
     assert_eq!(
-        cache::serialize(&[Record { offset: 0, envs: vec![e1], key: [0; KEY_LEN] }]),
-        cache::serialize(&[Record { offset: 0, envs: vec![e2], key: [0; KEY_LEN] }]),
+        cache::serialize(&[Record {
+            offset: 0,
+            envs: vec![e1],
+            key: [0; KEY_LEN]
+        }]),
+        cache::serialize(&[Record {
+            offset: 0,
+            envs: vec![e2],
+            key: [0; KEY_LEN]
+        }]),
         "BTreeMap ordering must make serialization deterministic"
     );
 }
@@ -259,12 +284,15 @@ fn oversized_code_size_is_refused_before_allocation() {
     let damage = parsed.damage.expect("must report");
     match damage.reason {
         DamageKind::BadEnvironment { inner } => {
-            assert!(matches!(
-                inner,
-                vitrine::EnvParseError::CodeSizeTooLarge { .. }
-                    | vitrine::EnvParseError::BadCodeSize { .. }
-                    | vitrine::EnvParseError::MapTooLarge { .. }
-            ), "got {inner:?}");
+            assert!(
+                matches!(
+                    inner,
+                    vitrine::EnvParseError::CodeSizeTooLarge { .. }
+                        | vitrine::EnvParseError::BadCodeSize { .. }
+                        | vitrine::EnvParseError::MapTooLarge { .. }
+                ),
+                "got {inner:?}"
+            );
         }
         other => panic!("expected BadEnvironment, got {other:?}"),
     }
@@ -298,11 +326,17 @@ fn repair_discard_removes_the_file_and_is_idempotent() {
     let path = dir.join("discard.bin");
     fs::write(&path, cache::serialize(&[record(1)])).unwrap();
     let parsed = cache::parse_file(&path).unwrap();
-    assert_eq!(cache::repair_file(&path, &parsed, Repair::Discard).unwrap(), 0);
+    assert_eq!(
+        cache::repair_file(&path, &parsed, Repair::Discard).unwrap(),
+        0
+    );
     assert!(!path.exists());
     // Second discard on a missing file succeeds rather than erroring.
     let again = cache::parse_file(&path).unwrap();
-    assert_eq!(cache::repair_file(&path, &again, Repair::Discard).unwrap(), 0);
+    assert_eq!(
+        cache::repair_file(&path, &again, Repair::Discard).unwrap(),
+        0
+    );
 }
 
 #[test]
@@ -313,7 +347,11 @@ fn repairing_a_clean_cache_changes_nothing() {
     fs::write(&path, &bytes).unwrap();
     let parsed = cache::parse_file(&path).unwrap();
     cache::repair_file(&path, &parsed, Repair::Truncate).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), bytes, "rewrite must be byte-identical");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        bytes,
+        "rewrite must be byte-identical"
+    );
 }
 
 // -- append ----------------------------------------------------------------
@@ -353,7 +391,11 @@ fn append_repairs_a_damaged_file_first() {
     fs::write(&path, &bytes).unwrap();
     cache::append_file(&path, &[record(3)]).unwrap();
     let parsed = cache::parse_file(&path).unwrap();
-    assert!(parsed.is_clean(), "append must leave a valid file: {:?}", parsed.damage);
+    assert!(
+        parsed.is_clean(),
+        "append must leave a valid file: {:?}",
+        parsed.damage
+    );
     assert_eq!(parsed.records.len(), 2, "record 1 survived, 3 appended");
 }
 
@@ -370,8 +412,16 @@ fn append_of_nothing_is_a_no_op() {
 #[test]
 fn parsed_cache_reports_env_count_across_records() {
     let records = vec![
-        Record { offset: 0, envs: vec![env_fragment(), env_fragment()], key: [1; KEY_LEN] },
-        Record { offset: 0, envs: vec![env_fragment()], key: [2; KEY_LEN] },
+        Record {
+            offset: 0,
+            envs: vec![env_fragment(), env_fragment()],
+            key: [1; KEY_LEN],
+        },
+        Record {
+            offset: 0,
+            envs: vec![env_fragment()],
+            key: [2; KEY_LEN],
+        },
     ];
     let parsed = cache::parse(&cache::serialize(&records));
     assert_eq!(parsed.env_count(), 3);
@@ -382,10 +432,18 @@ fn parsed_cache_reports_env_count_across_records() {
 fn environment_size_matches_bytes_written() {
     for env in [env_fragment(), compute_env(), geometry_env()] {
         let before = cache::serialize(&[]).len(); // header length
-        let bytes = cache::serialize(&[Record { offset: 0, envs: vec![env.clone()], key: [0; KEY_LEN] }]);
+        let bytes = cache::serialize(&[Record {
+            offset: 0,
+            envs: vec![env.clone()],
+            key: [0; KEY_LEN],
+        }]);
         let written = bytes.len() - before;
         // Record = num_envs (4) + env + key (16)
-        assert_eq!(written, 4 + env.size() + KEY_LEN, "size() must match write()");
+        assert_eq!(
+            written,
+            4 + env.size() + KEY_LEN,
+            "size() must match write()"
+        );
     }
 }
 

@@ -30,7 +30,9 @@ fn every_corpus_instruction_decodes_to_the_assemblers_mnemonic() {
         let got = a64::decode(word).mnemonic();
         if got != expected {
             let d = a64::decode(word);
-            failures.push(format!("{word:#010x} `{asm}`: expected `{expected}`, got `{got}` ({d:?})"));
+            failures.push(format!(
+                "{word:#010x} `{asm}`: expected `{expected}`, got `{got}` ({d:?})"
+            ));
         }
     }
     assert!(
@@ -323,7 +325,10 @@ fn every_instruction_in_compiler_output_is_recognised() {
             }
         }
     }
-    assert!(checked > 200, "expected a few hundred real instructions, got {checked}");
+    assert!(
+        checked > 200,
+        "expected a few hundred real instructions, got {checked}"
+    );
     assert!(
         unknown.is_empty(),
         "{} of {checked} real instructions are unrecognised: {:08x?}",

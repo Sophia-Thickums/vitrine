@@ -151,7 +151,10 @@ fn load_store_pre_and_post_index_write_the_base_back() {
     assert_eq!(m.read(0x808, 8).unwrap(), 0xDEAD_BEEF);
     m.step().unwrap();
     assert_eq!(m.x[3], 0xDEAD_BEEF);
-    assert_eq!(m.x[2], 0x810, "post-index writes the base back after the access");
+    assert_eq!(
+        m.x[2], 0x810,
+        "post-index writes the base back after the access"
+    );
 }
 
 #[test]
@@ -160,7 +163,11 @@ fn sign_extending_loads_extend_the_value() {
     m.x[1] = 0x900;
     m.write(0x900, 1, 0x80).unwrap();
     m.step().unwrap();
-    assert_eq!(m.x[0], (-128i64) as u64, "0x80 loads as -128 into an X register");
+    assert_eq!(
+        m.x[0],
+        (-128i64) as u64,
+        "0x80 loads as -128 into an X register"
+    );
 }
 
 #[test]
@@ -217,7 +224,10 @@ fn a_runaway_loop_hits_the_step_limit() {
 #[test]
 fn the_fixture_is_not_empty_and_every_program_has_words() {
     let p = programs();
-    assert!(p.len() >= 10, "the fixture should cover every program the tests use");
+    assert!(
+        p.len() >= 10,
+        "the fixture should cover every program the tests use"
+    );
     for (name, words) in &p {
         assert!(!words.is_empty(), "{name} has no instructions");
     }

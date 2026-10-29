@@ -401,7 +401,11 @@ pub enum AddressMode {
     /// `amount` carries the `S` bit: when set, the extended value is scaled by the access size.
     /// **Only `LSL` is a shift**; for `UXTW`/`SXTW`/`SXTX` the register is extended to 64 bits and
     /// then scaled, which is why this is a bool rather than a `ShiftType`.
-    RegisterOffset { rm: u8, extend: u8, scaled_by_size: bool },
+    RegisterOffset {
+        rm: u8,
+        extend: u8,
+        scaled_by_size: bool,
+    },
 }
 
 /// Sign-extend the low `bits` of `value` and shift the result left by `shift`.
@@ -639,8 +643,8 @@ fn decode_bitfield(word: u32) -> Option<Instr> {
     }
     let opc = (word >> 29) & 3;
     let signed = match opc {
-        0 => true,   // SBFM
-        2 => false,  // UBFM
+        0 => true,                                 // SBFM
+        2 => false,                                // UBFM
         _ => return Some(Instr::Unknown { word }), // BFM and reserved
     };
     let sf = word >> 31 != 0;
@@ -1031,7 +1035,14 @@ impl Instr {
                 MovOp::Not => "movn".into(),
                 MovOp::Keep => "movk".into(),
             },
-            Instr::AddSubImm { set_flags, sub, rd, lsl12, imm, .. } => match (set_flags, sub) {
+            Instr::AddSubImm {
+                set_flags,
+                sub,
+                rd,
+                lsl12,
+                imm,
+                ..
+            } => match (set_flags, sub) {
                 (false, false) if rd == 31 => "mov".into(), // ADD XZR? not an alias; keep add
                 (false, false) => "add".into(),
                 (false, true) => "sub".into(),
@@ -1040,7 +1051,14 @@ impl Instr {
                 (true, false) => "adds".into(),
                 (true, true) => "subs".into(),
             },
-            Instr::AddSubShifted { set_flags, sub, rd, shift, amount, .. } => match (set_flags, sub) {
+            Instr::AddSubShifted {
+                set_flags,
+                sub,
+                rd,
+                shift,
+                amount,
+                ..
+            } => match (set_flags, sub) {
                 (true, true) if rd == 31 && shift == ShiftType::Lsl && amount == 0 => "cmp".into(),
                 (true, false) if rd == 31 && shift == ShiftType::Lsl && amount == 0 => "cmn".into(),
                 (false, false) => "add".into(),
@@ -1055,7 +1073,15 @@ impl Instr {
                 LogicalOp::Eor => "eor".into(),
                 LogicalOp::Ands => "ands".into(),
             },
-            Instr::LogicalShifted { op, invert, rd, rn, shift, amount, .. } => {
+            Instr::LogicalShifted {
+                op,
+                invert,
+                rd,
+                rn,
+                shift,
+                amount,
+                ..
+            } => {
                 // ORR Xd, XZR, Xm is printed as `mov Xd, Xm`.
                 if op == LogicalOp::Orr
                     && !invert
@@ -1079,7 +1105,13 @@ impl Instr {
                     (LogicalOp::Ands, true) => "bics".into(),
                 }
             }
-            Instr::Bitfield { sf, signed, immr, imms, .. } => {
+            Instr::Bitfield {
+                sf,
+                signed,
+                immr,
+                imms,
+                ..
+            } => {
                 let width = if sf { 63 } else { 31 };
                 let (immr, imms) = (u32::from(immr), u32::from(imms));
                 if !signed {
@@ -1114,7 +1146,13 @@ impl Instr {
                 ShiftType::Ror => "ror",
             }
             .into(),
-            Instr::LoadStore { load, size, signed, mode, .. } => {
+            Instr::LoadStore {
+                load,
+                size,
+                signed,
+                mode,
+                ..
+            } => {
                 let base = match (load, signed, size) {
                     (true, false, 1) => "ldrb",
                     (true, false, 2) => "ldrh",
@@ -1158,7 +1196,9 @@ impl Instr {
                 FpOp::Div => "fdiv".into(),
                 FpOp::Neg => "fneg".into(),
             },
-            Instr::FpMov { .. } | Instr::FpMovImm { .. } | Instr::FpToGen { .. }
+            Instr::FpMov { .. }
+            | Instr::FpMovImm { .. }
+            | Instr::FpToGen { .. }
             | Instr::GenToFp { .. } => "fmov".into(),
             Instr::FpFused { op, .. } => match op {
                 0 => "fmadd",
