@@ -45,3 +45,25 @@ So a driver cannot be used as a validator: "the driver accepted it" is not evide
 file is sound. Structure has to be checked before use, and damage has to be handled as a repair
 rather than a refetch. That is the whole reason `LoadPipelines` in the C++ tree must not delete the
 file on one bad record, and the reason this crate parses, reports and truncates instead.
+
+## Cross-machine determinism, re-run at HEAD (2026-10-29)
+
+The decoder's determinism claim is not a one-off: re-measured at the commit that added the memory guard
+and the address-keyed runtime, on two machines with different CPUs, different glibc and different Rust
+builds.
+
+| machine | CPU | words | hash | rate |
+|---|---|---|---|---|
+| this box | Ryzen 9 9950X3D (Zen 5) | 20,000,000 (seed 0x4660) | **0x5904d5599541f01c** | 54.2 Mw/s |
+| RetrOasis | Xeon E5-2697 v2 (Ivy Bridge-EP, 12c/24t) | 20,000,000 (seed 0x4660) | **0x5904d5599541f01c** | 17.6 Mw/s |
+
+Identical checksums AND identical `unknown` counts (14,373,200) on both. A decoder reading uninitialised
+memory, relying on unspecified layout, or branching on architecture would not survive this — the two CPUs
+are nine years apart and share no AVX-512, so any such dependence shows up as a different hash.
+
+**How to reproduce, and the trap that costs an hour:** the binary must be built for a generic x86-64
+baseline. This distro's Rust std is compiled for a newer microarchitecture, so a binary built here dies
+on the Xeon with `Illegal instruction` — and so does a hello-world built the same way, which is the control
+that tells you it is the toolchain and not your code. The working route: build inside a Fedora container
+(`podman run --rm -v "$PWD":/w -w /w fedora:44 bash -lc 'dnf -y install cargo && cargo build --release --example shard'`),
+ship the result, run the same seed on both.
