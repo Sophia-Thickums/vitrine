@@ -158,3 +158,91 @@ fn an_empty_region_produces_one_empty_block() {
     // no instruction may be invented.
     assert_eq!(p.instruction_count(), 0);
 }
+
+// ── scan_at: the block-at-address decode an emulator needs ───────────────────────────────────────
+
+fn reader(words: &'static [u32], base: i64) -> impl FnMut(i64) -> Option<u32> {
+    move |addr: i64| {
+        let off = addr - base;
+        if off < 0 || off % 4 != 0 {
+            return None;
+        }
+        words.get((off / 4) as usize).copied()
+    }
+}
+
+#[test]
+fn scan_at_agrees_with_scan_wherever_a_terminator_closes_the_block() {
+    // A block that ends because of its own terminator is fully determined locally, so both scans
+    // must produce the same thing. A block that ended only because the region's next start cut it
+    // off (`exit: Fallthrough`) is the case scan_at cannot reproduce — see the test below.
+    let p = block::scan(&PROGRAM);
+    let mut compared = 0;
+    for (start, expected) in &p.blocks {
+        if expected.exit == Exit::Fallthrough {
+            continue;
+        }
+        let got = block::scan_at(*start, reader(&PROGRAM, 0), 64).expect("block here");
+        assert_eq!(&got, expected, "scan_at disagrees with scan at offset {start}");
+        compared += 1;
+    }
+    assert_eq!(compared, 3, "the three terminated blocks were actually compared");
+}
+
+#[test]
+fn scan_at_extends_past_a_boundary_scan_knew_about_and_the_cache_must_drop_it() {
+    // Offset 20 is the target of the `b` at 12, so scan() closes the block at 16 one instruction
+    // early. scan_at has no way to know 20 is a target: it walks to the `ret` and returns a block
+    // covering [16, 24). That is the documented difference, and it is why the cache is keyed by
+    // guest address and InvalidateCacheRange must drop [16, 24) when a branch is discovered into
+    // the middle of it.
+    let p = block::scan(&PROGRAM);
+    let short = p.block_at(16).expect("scan's short block");
+    let long = block::scan_at(16, reader(&PROGRAM, 0), 64).expect("scan_at's block");
+
+    assert_eq!(short.len(), 1);
+    assert_eq!(long.len(), 2);
+    assert_eq!(long.exit, Exit::Return);
+    assert!(long.end > p.blocks.keys().copied().find(|k| *k > 16).unwrap(),
+        "the longer block reaches past the next known start, which is why invalidation exists");
+}
+
+#[test]
+fn scan_at_at_an_unmapped_address_returns_none_not_an_empty_block() {
+    let got = block::scan_at(0x1000, reader(&PROGRAM, 0), 64);
+    assert!(got.is_none(), "an unmapped address is no block, never an empty one");
+}
+
+#[test]
+fn scan_at_marks_truncation_when_memory_ends_mid_block() {
+    // Only the first two words are mapped; the third read fails.
+    let partial: &'static [u32] = &PROGRAM[..2];
+    let got = block::scan_at(0, reader(partial, 0), 64).expect("block starts");
+    assert_eq!(got.len(), 2);
+    assert!(got.has_unknown, "a truncated block must be uncompilable");
+    assert!(!got.is_compilable());
+}
+
+#[test]
+fn scan_at_stops_at_the_instruction_budget() {
+    // `add x1, x0, #2` is not a terminator; with a budget of 3 the walk must stop at 3.
+    let run: &'static [u32] = &[0x9100_0801; 8];
+    let got = block::scan_at(0, reader(run, 0), 3).expect("block starts");
+    assert_eq!(got.len(), 3);
+    assert_eq!(got.exit, Exit::Fallthrough);
+    assert_eq!(got.end, 12);
+}
+
+#[test]
+fn scan_at_reports_absolute_guest_offsets() {
+    // The same program based at 0x1000: the epilogue writes pc verbatim, so offsets must be absolute.
+    let got = block::scan_at(0x1000, reader(&PROGRAM, 0x1000), 64).expect("block at 0x1000");
+    assert_eq!(got.start, 0x1000);
+    assert_eq!(got.instructions[0].0, 0x1000, "first instruction is at the guest address");
+    assert_eq!(got.instructions.last().unwrap().0, 0x1008, "cbz sits at 0x1008");
+    assert_eq!(got.end, 0x100c);
+
+    // A direct branch's target must also be absolute: `b #8` at 0x100c jumps to 0x1014.
+    let b = block::scan_at(0x100c, reader(&PROGRAM, 0x1000), 64).expect("block at 0x100c");
+    assert_eq!(b.exit, Exit::Direct { target: 0x1014 });
+}

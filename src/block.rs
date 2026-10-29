@@ -212,6 +212,79 @@ pub fn scan(words: &[u32]) -> Program {
     program
 }
 
+/// Decode **one** basic block starting at `start`, reading words through `read_word`.
+///
+/// # Why this exists beside [`scan`]
+///
+/// [`scan`] is a whole-region pass: it decodes a contiguous slice once, collects every branch
+/// target inside it, and closes blocks at those targets. That is correct for a benchmark and wrong
+/// for an emulator, which has no contiguous region — a guest program is fetched block by block out
+/// of a 39-bit address space, at addresses that are only known as execution reaches them.
+///
+/// So this walks forward from `start` until an instruction that [`ends_block`], and no further.
+///
+/// # The one difference the caller must handle
+///
+/// `scan` guarantees a block never extends past another block's start, because it knows every
+/// target up front. This function cannot know that: a branch elsewhere may land in the middle of
+/// the block it returns. When that happens the cached translation of the longer block is stale and
+/// must be dropped — which is exactly what the emulator's `InvalidateCacheRange` is for, and why
+/// the cache is keyed by address rather than by offset into a slice.
+///
+/// # Returns
+///
+/// `None` when the first word cannot be read (an unmapped address is "no block here", never an
+/// empty block). Truncation is explicit: an unreadable or undecodable instruction inside the block
+/// stops the walk and sets `has_unknown`, so [`Block::is_compilable`] refuses the block rather than
+/// letting the translator emit code for part of it.
+///
+/// Offsets in the returned block are **absolute guest addresses**, not offsets from `start`: the
+/// compiled epilogue writes `state.pc` verbatim (`epilogue` in `jit.rs`), so a block that emitted
+/// self-relative offsets would send the driver back to address 0 after every fallthrough. `scan`
+/// gets away with region-relative offsets only because its region begins at address 0.
+pub fn scan_at<F>(start: i64, mut read_word: F, max_instructions: usize) -> Option<Block>
+where
+    F: FnMut(i64) -> Option<u32>,
+{
+    let mut instructions: Vec<(i64, u32, Instr)> = Vec::new();
+    let mut has_unknown = false;
+    let mut exit = Exit::Fallthrough;
+    let mut offset = start;
+
+    while instructions.len() < max_instructions {
+        let Some(word) = read_word(offset) else {
+            // Ran off mapped memory mid-block: keep what was decoded and mark it, never pad.
+            has_unknown = !instructions.is_empty();
+            break;
+        };
+        let instr = a64::decode(word);
+        instructions.push((offset, word, instr));
+
+        if matches!(instr, Instr::Unknown { .. }) {
+            has_unknown = true;
+            break;
+        }
+        if ends_block(instr) {
+            exit = exit_of(instr, offset);
+            break;
+        }
+        offset += 4;
+    }
+
+    if instructions.is_empty() {
+        return None;
+    }
+    let end = instructions.last().map(|(o, _, _)| o + 4).unwrap_or(start);
+
+    Some(Block {
+        start,
+        end,
+        instructions,
+        exit,
+        has_unknown,
+    })
+}
+
 /// True for instructions that end a block.
 fn ends_block(instr: Instr) -> bool {
     matches!(

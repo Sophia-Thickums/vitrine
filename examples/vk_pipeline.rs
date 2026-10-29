@@ -1,3 +1,9 @@
+// The two functions that touch Vulkan are already declared `unsafe fn`, so their unsafety is in the
+// signature where a reader looks for it. Edition 2024 additionally wants an `unsafe {}` block at every
+// call site inside them; in a measurement harness that is one line of ceremony per call and no extra
+// protection, so it is allowed here and nowhere in the library.
+#![allow(unsafe_op_in_unsafe_fn)]
+
 //! What a Vulkan pipeline actually costs to create, with and without a cache.
 //!
 //! This is the measurement behind the whole cache subsystem: if creating a pipeline were free,
