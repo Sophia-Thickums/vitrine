@@ -75,6 +75,21 @@ and the same entry wins. Patches and DLC are separate slots from the base game, 
 DLC whose base application is missing is retained and flagged rather than silently ignored.
 
 
+### Using it from CMake
+
+An install prefix (or a checkout root) can be consumed directly:
+
+```cmake
+find_package(vitrine 0.1 CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE vitrine::vitrine)
+```
+
+The config lives at `cmake/vitrineConfig.cmake` and expects `lib/libvitrine.a` (or `.so`) plus
+`include/vitrine.h` under the prefix. It adds `Threads::Threads`, `dl` and `m` to the static link,
+which a Rust staticlib needs on Linux. Verified end to end: a separate CMake project finds the
+package by version and links the library (`/tmp/vitrine-pkgtest`, run during the 0.1.1 build).
+
+
 ## What is proven, and what is not
 
 Measured, not asserted:
