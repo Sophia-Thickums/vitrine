@@ -32,6 +32,7 @@
 #![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod a64;
+pub mod block;
 pub mod cache;
 pub mod content;
 pub mod cursor;
@@ -42,6 +43,7 @@ pub use cache::{
     CACHE_VERSION, Damage, DamageKind, KEY_LEN, MAGIC, MAX_ENVS, ParsedCache, Record, Repair,
     append_file, parse, parse_file, repair_file, serialize,
 };
+pub use block::{Block, Exit, Program, scan};
 pub use content::{Entry, Rejected, Selection, TitleType, Warning, base_title_id, select};
 pub use env::{Environment, EnvParseError, Maps, Stage};
 
