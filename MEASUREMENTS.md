@@ -82,3 +82,17 @@ using it.** Two laws with teeth in this: a control tells you *that* something di
 pipelines exit status is the last command's, so `cargo build … | tail` can fail and still read as success.
 The determinism result above is unaffected — it was produced by that host binary, on both machines, with
 the same hash and the same unknown-count.
+
+### ★ THE HASH IS A FINGERPRINT OF THE DECODER AT A COMMIT, NOT A CONSTANT
+
+Adding LL/SC changed it, as it must — and comparing the two rows is the check that the change landed
+where it was supposed to:
+
+| commit | decoder | hash (seed 0x4660, 20M) | unknown |
+|---|---|---|---|
+| `2f58f3e` | before LL/SC | `0x5904d5599541f01c` | 14,373,200 |
+| `34b2c12` + LL/SC | four exclusive forms decoded | `0xa70b01d4b2759f8f` | 14,368,372 |
+
+4,828 words stopped being `Unknown` — that is the exclusive forms appearing in the generator's output.
+**The invariant is that BOTH MACHINES AGREE at a given commit, never that the number stays the same.**
+Re-measured on the Xeon at the same commit: `0xa70b01d4b2759f8f`, unknown 14,368,372 — identical.

@@ -232,3 +232,60 @@ fn the_fixture_is_not_empty_and_every_program_has_words() {
         assert!(!words.is_empty(), "{name} has no instructions");
     }
 }
+
+// ── the exclusive monitor: a lock that fails must SAY it failed ──────────────────────────────────
+//
+// ldxr/stxr encodings from `llvm-mc`. The failure path is the one that matters: a store-exclusive
+// that cannot store still writes its status register, and a caller that ignores that has a lock
+// which silently does nothing.
+
+const LDXR_X0_X1: u32 = 0xC85F_7C20;
+const STXR_W2_X3_X4: u32 = 0xC802_7C83;
+
+#[test]
+fn a_store_exclusive_after_a_matching_load_succeeds_and_stores() {
+    let mut m = Machine::new(0x1000, 0x100);
+    m.load_code(0x1000, &[LDXR_X0_X1, STXR_W2_X3_X4]);
+    m.x[1] = 0x1040; // load address
+    m.x[4] = 0x1040; // same address for the store
+    m.x[3] = 0xAB; // value to store
+    m.step().expect("ldxr executes");
+    m.step().expect("stxr executes");
+
+    assert_eq!(m.x[0], 0, "the load read zeroed memory");
+    assert_eq!(m.x[2], 0, "status 0 = the store succeeded");
+    assert_eq!(
+        m.read(0x1040, 8).unwrap(),
+        0xAB,
+        "and the value is in memory"
+    );
+}
+
+#[test]
+fn a_store_exclusive_with_no_reservation_fails_and_writes_one() {
+    let mut m = Machine::new(0x1000, 0x100);
+    m.load_code(0x1000, &[STXR_W2_X3_X4]); // no preceding load
+    m.x[4] = 0x1040;
+    m.x[3] = 0xAB;
+    m.step().expect("stxr executes");
+
+    assert_eq!(m.x[2], 1, "status 1 = the store did not happen");
+    assert_eq!(m.read(0x1040, 8).unwrap(), 0, "and memory is untouched");
+}
+
+#[test]
+fn a_reservation_is_address_specific() {
+    let mut m = Machine::new(0x1000, 0x100);
+    m.load_code(0x1000, &[LDXR_X0_X1, STXR_W2_X3_X4]);
+    m.x[1] = 0x1040; // armed here
+    m.x[4] = 0x1048; // but stored here
+    m.x[3] = 0xAB;
+    m.step().expect("ldxr executes");
+    m.step().expect("stxr executes");
+
+    assert_eq!(
+        m.x[2], 1,
+        "a reservation for one address must not authorise another"
+    );
+    assert_eq!(m.read(0x1048, 8).unwrap(), 0, "and nothing was written");
+}

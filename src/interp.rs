@@ -62,6 +62,11 @@ pub struct Machine {
     pub memory: Vec<u8>,
     /// Address that `memory[0]` corresponds to.
     pub base: u64,
+    /// The exclusive monitor: `(address, size)` armed by a load-exclusive, consumed by a matching
+    /// store-exclusive. A single reservation is the architecture's whole local-monitor model — what
+    /// it does NOT do is survive a context switch, and a caller that swaps machines mid-lock gets
+    /// the failure it deserves: the store fails and writes 1.
+    pub exclusive: Option<(u64, u8)>,
 }
 
 impl Machine {
@@ -78,6 +83,7 @@ impl Machine {
             v: false,
             memory: vec![0; bytes],
             base,
+            exclusive: None,
         }
     }
 
@@ -567,6 +573,43 @@ impl Machine {
                 if let Some(sp) = writeback {
                     self.set_sp(rn, sp);
                 }
+                self.pc = next;
+            }
+            Instr::LoadExclusive {
+                size,
+                rt,
+                rn,
+                acquire: _,
+            } => {
+                // Acquire ordering is a barrier, not a different local result: the read and the
+                // arming are identical to LDXR.
+                let address = self.get_sp(rn);
+                let value = self.read(address, size)?;
+                self.set(rt, value);
+                self.exclusive = Some((address, size));
+                self.pc = next;
+            }
+            Instr::StoreExclusive {
+                size,
+                rs,
+                rt,
+                rn,
+                release: _,
+            } => {
+                // ★ The status write goes to Rs on BOTH paths. A lock whose failure is silently
+                // ignored is the bug this instruction exists to make impossible, so the failure
+                // branch is exercised by its own test rather than assumed.
+                let address = self.get_sp(rn);
+                let armed = self.exclusive == Some((address, size));
+                let status = if armed {
+                    let value = self.get(rt);
+                    self.write(address, size, value)?;
+                    0
+                } else {
+                    1
+                };
+                self.exclusive = None; // a store-exclusive always consumes the reservation
+                self.set(rs, status);
                 self.pc = next;
             }
             Instr::LoadStorePair {

@@ -307,7 +307,11 @@ fn a_wrapping_access_address_is_caught_by_the_below_window_check() {
         jit::Exit::DataAbort as u64,
         "a wrapped address must abort; the below-window compare is what catches it"
     );
-    assert_eq!(jit.state().pc, 0, "and pc stays on the faulting instruction");
+    assert_eq!(
+        jit.state().pc,
+        0,
+        "and pc stays on the faulting instruction"
+    );
 }
 
 #[test]
@@ -328,12 +332,35 @@ fn the_last_byte_of_the_window_is_in_bounds_and_one_past_it_is_not() {
     ok_state.x[1] = 56; // bytes 56..63 -> last byte 63, inside a 64-byte window
     let mut jit = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), ok_state);
     jit.run(4).expect("runs");
-    assert_ne!(jit.state().last_exit, jit::Exit::DataAbort as u64, "last byte inside must load");
+    assert_ne!(
+        jit.state().last_exit,
+        jit::Exit::DataAbort as u64,
+        "last byte inside must load"
+    );
 
     let mut bad_state = JitState::new(base, 64);
     bad_state.pc = 0;
     bad_state.x[1] = 57; // bytes 57..64 -> last byte 64, one past the window
     let mut jit2 = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), bad_state);
     jit2.run(4).expect("returns");
-    assert_eq!(jit2.state().last_exit, jit::Exit::DataAbort as u64, "one byte past must abort");
+    assert_eq!(
+        jit2.state().last_exit,
+        jit::Exit::DataAbort as u64,
+        "one byte past must abort"
+    );
+}
+
+#[test]
+fn the_compiler_refuses_an_exclusive_instead_of_emitting_wrong_code() {
+    // LL/SC is decoded and the interpreter executes it; the JIT does not emit it. The contract is
+    // that it REFUSES — a block containing one must return Err so the driver stops visibly, never a
+    // compiled block that silently skips the lock.
+    let words: &'static [u32] = &[0xC85F_7C20, 0xD65F_03C0]; // ldxr x0, [x1] ; ret
+    let program = block::scan(words);
+    let blk = program.block_at(0).expect("block at 0");
+    match jit::compile(blk) {
+        Err(vitrine::a64::Instr::LoadExclusive { .. }) => {}
+        Err(other) => panic!("expected the exclusive to be the refusal, got {other:?}"),
+        Ok(_) => panic!("the compiler must not emit code for an exclusive it cannot honour"),
+    }
 }

@@ -336,3 +336,64 @@ fn every_instruction_in_compiler_output_is_recognised() {
         unknown
     );
 }
+
+// ── load/store exclusive: decoded, and the two forms distinguished ───────────────────────────────
+//
+// Every word below came from `llvm-mc -triple=aarch64 -show-encoding`, not from memory. They were
+// `Unknown { word }` before this arm existed, which is why no lock in guest code could ever run.
+
+#[test]
+fn load_and_store_exclusive_decode_with_their_fields() {
+    // ldxr x0, [x1]
+    match a64::decode(0xC85F_7C20) {
+        Instr::LoadExclusive {
+            size,
+            rt,
+            rn,
+            acquire,
+        } => {
+            assert_eq!(
+                (size, rt, rn, acquire),
+                (8, 0, 1, false),
+                "ldxr is a 64-bit acquire-free load"
+            );
+        }
+        other => panic!("expected LoadExclusive, got {other:?}"),
+    }
+    // ldaxr x0, [x1] — same fields, acquire set
+    match a64::decode(0xC85F_FC20) {
+        Instr::LoadExclusive { acquire, .. } => assert!(acquire, "ldaxr must set the acquire bit"),
+        other => panic!("expected LoadExclusive, got {other:?}"),
+    }
+    // stxr w2, x3, [x4] — Rs=2, Rt=3, Rn=4
+    match a64::decode(0xC802_7C83) {
+        Instr::StoreExclusive {
+            size,
+            rs,
+            rt,
+            rn,
+            release,
+        } => {
+            assert_eq!(
+                (size, rs, rt, rn, release),
+                (8, 2, 3, 4, false),
+                "stxr carries its status register in Rs, which is the field a caller will read"
+            );
+        }
+        other => panic!("expected StoreExclusive, got {other:?}"),
+    }
+    // stlxr w2, x3, [x4]
+    match a64::decode(0xC802_FC83) {
+        Instr::StoreExclusive { release, .. } => assert!(release, "stlxr must set the release bit"),
+        other => panic!("expected StoreExclusive, got {other:?}"),
+    }
+    // ldxr w5, [x6] / stxr w7, w5, [x6] — the 32-bit forms
+    match a64::decode(0x885F_7CC5) {
+        Instr::LoadExclusive { size, rt, rn, .. } => assert_eq!((size, rt, rn), (4, 5, 6)),
+        other => panic!("expected 32-bit LoadExclusive, got {other:?}"),
+    }
+    match a64::decode(0x8807_7CC5) {
+        Instr::StoreExclusive { size, rs, .. } => assert_eq!((size, rs), (4, 7)),
+        other => panic!("expected 32-bit StoreExclusive, got {other:?}"),
+    }
+}
