@@ -11,9 +11,7 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [dependencies]
 thiserror = "2"
-
-[dev-dependencies]
-# Only for mmap in the JIT tests: an executable mapping is not reachable through std.
+# mmap/mprotect for the executable mapping the compiled blocks run from; std has no equivalent.
 libc = "0.2"
 
 [profile.release]

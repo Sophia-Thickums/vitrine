@@ -98,8 +98,10 @@ impl JitState {
 pub fn compile(block: &Block) -> Result<Vec<u8>, Instr> {
     let mut c = Code::new();
 
-    // Prologue: state pointer into r15, which no emitted instruction touches.
+    // Prologue: preserve the callee-saved registers this function uses, then take the state
+    // pointer into r15. r15 must be saved as well as restored: it is the caller's.
     c.push_reg(Reg::Rbx);
+    c.push_reg(Reg::R15);
     c.mov_reg(Reg::R15, Reg::Rdi);
 
     for &(offset, _word, instr) in &block.instructions {
@@ -107,11 +109,7 @@ pub fn compile(block: &Block) -> Result<Vec<u8>, Instr> {
     }
 
     // Fallthrough epilogue: pc = end of block, return Next.
-    c.mov_imm64(Reg::Rax, block.end as u64);
-    c.mov_store(Reg::R15, state::PC, Reg::Rax);
-    c.mov_imm64(Reg::Rax, Exit::Next as u64);
-    c.pop(Reg::Rbx);
-    c.ret();
+    epilogue(&mut c, block.end, Exit::Next);
 
     Ok(c.finish())
 }
@@ -486,11 +484,7 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             }
         }
         Instr::B { offset: rel } => {
-            c.mov_imm64(Reg::Rax, (offset + rel) as u64);
-            c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::Jumped as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue(c, offset + rel, Exit::Jumped);
         }
         Instr::BCond { cond, offset: rel } => {
             let taken = 0;
@@ -498,17 +492,9 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             c.test_reg(Reg::Rax, Reg::Rax);
             c.jcc(Cc::Ne, taken);
             // not taken: fall through with pc = next
-            c.mov_imm64(Reg::Rax, (offset + 4) as u64);
-            c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::Jumped as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue(c, offset + 4, Exit::Jumped);
             c.label(taken);
-            c.mov_imm64(Reg::Rax, (offset + rel) as u64);
-            c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::Jumped as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue(c, offset + rel, Exit::Jumped);
         }
         Instr::Cbz {
             sf,
@@ -524,24 +510,75 @@ fn emit(c: &mut Code, instr: Instr, offset: i64) -> Result<(), Instr> {
             }
             c.test_reg(Reg::Rax, Reg::Rax);
             c.jcc(if nonzero { Cc::Ne } else { Cc::E }, taken);
-            c.mov_imm64(Reg::Rax, (offset + 4) as u64);
-            c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::Jumped as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue(c, offset + 4, Exit::Jumped);
             c.label(taken);
-            c.mov_imm64(Reg::Rax, (offset + rel) as u64);
-            c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::Jumped as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue(c, offset + rel, Exit::Jumped);
         }
         Instr::Svc { .. } => {
-            c.mov_imm64(Reg::Rax, offset as u64);
+            epilogue(c, offset, Exit::SupervisorCall);
+        }
+        Instr::Ret { rn } => {
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
             c.mov_store(Reg::R15, state::PC, Reg::Rax);
-            c.mov_imm64(Reg::Rax, Exit::SupervisorCall as u64);
-            c.pop(Reg::Rbx);
-            c.ret();
+            epilogue_tail(c, Exit::Jumped);
+        }
+        Instr::Br { rn } | Instr::Blr { rn } => {
+            if matches!(instr, Instr::Blr { .. }) {
+                // The return address is the next instruction, architecturally.
+                c.mov_imm64(Reg::Rax, (offset + 4) as u64);
+                c.mov_store(Reg::R15, state::x(30), Reg::Rax);
+            }
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+            c.mov_store(Reg::R15, state::PC, Reg::Rax);
+            epilogue_tail(c, Exit::Jumped);
+        }
+        Instr::Bl { offset: rel } => {
+            c.mov_imm64(Reg::Rax, (offset + 4) as u64);
+            c.mov_store(Reg::R15, state::x(30), Reg::Rax);
+            epilogue(c, offset + rel, Exit::Jumped);
+        }
+        Instr::LoadStorePair {
+            load,
+            sf,
+            rt,
+            rt2,
+            rn,
+            mode,
+        } => {
+            let size: u8 = if sf { 8 } else { 4 };
+            let (disp, writeback) = match mode {
+                AddressMode::Offset { imm } => (imm, None),
+                AddressMode::PreIndex { imm } => (imm, Some(imm)),
+                AddressMode::PostIndex { imm } => (0, Some(imm)),
+                _ => return Err(instr),
+            };
+            c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+            c.mov_load(Reg::Rdx, Reg::R15, state::MEM_PTR);
+            c.add_reg(Reg::Rax, Reg::Rdx);
+            if disp != 0 {
+                c.add_imm(Reg::Rax, i32::try_from(disp).map_err(|_| instr)?);
+            }
+            let second = i32::from(size);
+            if load {
+                c.mov_load(Reg::Rsi, Reg::Rax, 0);
+                if rt != 31 {
+                    c.mov_store(Reg::R15, state::x(rt), Reg::Rsi);
+                }
+                c.mov_load(Reg::Rsi, Reg::Rax, second);
+                if rt2 != 31 {
+                    c.mov_store(Reg::R15, state::x(rt2), Reg::Rsi);
+                }
+            } else {
+                c.mov_load(Reg::Rsi, Reg::R15, state::x(rt));
+                c.mov_store(Reg::Rax, 0, Reg::Rsi);
+                c.mov_load(Reg::Rsi, Reg::R15, state::x(rt2));
+                c.mov_store(Reg::Rax, second, Reg::Rsi);
+            }
+            if let Some(imm) = writeback {
+                c.mov_load(Reg::Rax, Reg::R15, state::x(rn));
+                c.add_imm(Reg::Rax, i32::try_from(imm).map_err(|_| instr)?);
+                c.mov_store(Reg::R15, state::x(rn), Reg::Rax);
+            }
         }
         // Everything else is the driver's problem, not a silent no-op.
         _ => return Err(instr),
@@ -590,6 +627,32 @@ fn materialise_flags(c: &mut Code, subtraction: bool) {
     c.mov_store(Reg::R15, state::FLAGS, Reg::Rcx);
 }
 
+
+
+
+/// Exit without touching `pc` — for paths that have already stored it.
+fn epilogue_tail(c: &mut Code, exit: Exit) {
+    c.mov_imm64(Reg::Rax, exit as u64);
+    c.pop(Reg::R15);
+    c.pop(Reg::Rbx);
+    c.ret();
+}
+
+/// Emit the standard exit: write `pc`, put the exit code in `rax`, restore the callee-saved
+/// registers and return.
+///
+/// Restoring `r15` is not optional. It holds the state pointer for the body of the function, but it
+/// is **callee-saved** in the System V ABI: the Rust caller may be using it for its own locals, and
+/// returning with it clobbered corrupted the caller's stack frame — which surfaced as glibc's
+/// `free(): invalid size` several calls later, nowhere near the generated code.
+fn epilogue(c: &mut Code, pc: i64, exit: Exit) {
+    c.mov_imm64(Reg::Rax, pc as u64);
+    c.mov_store(Reg::R15, state::PC, Reg::Rax);
+    c.mov_imm64(Reg::Rax, exit as u64);
+    c.pop(Reg::R15);
+    c.pop(Reg::Rbx);
+    c.ret();
+}
 
 /// Emit code that leaves 1 in `rax` when `cond` holds, 0 otherwise, reading the packed flags byte
 /// from memory.
@@ -675,4 +738,174 @@ fn emit_cond_true(c: &mut Code, cond: Cond) {
         }
         Cond::Al | Cond::Nv => c.mov_imm64(Reg::Rax, 1),
     }
+}
+
+/// An executable mapping holding one compiled block.
+///
+/// `mmap` with PROT_READ|PROT_WRITE|PROT_EXEC, because a W^X split would need a second mapping and
+/// a copy; this project is not defending against itself, and the alternative is a debugger-hostile
+/// arrangement that buys nothing here.
+pub struct Exec {
+    ptr: *mut u8,
+    len: usize,
+}
+
+// SAFETY: the pointer is an anonymous mapping owned exclusively by this value; it is never aliased
+// mutably elsewhere, and the generated code only touches the state struct it is handed.
+unsafe impl Send for Exec {}
+
+impl Exec {
+    /// Copy `code` into a fresh executable mapping.
+    pub fn new(code: &[u8]) -> Self {
+        let page = 4096usize;
+        let len = code.len().div_ceil(page) * page;
+        assert!(len > 0, "cannot map an empty block");
+        // SAFETY: anonymous private mapping of `len` bytes; checked against MAP_FAILED below.
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(ptr, libc::MAP_FAILED, "mmap failed");
+        // SAFETY: the mapping is `len` bytes, writable, and `code` is shorter than or equal to it.
+        unsafe {
+            std::ptr::copy_nonoverlapping(code.as_ptr(), ptr.cast::<u8>(), code.len());
+        }
+        Self {
+            ptr: ptr.cast::<u8>(),
+            len,
+        }
+    }
+
+    /// The generated function.
+    pub fn entry(&self) -> extern "C" fn(*mut JitState) -> u64 {
+        // SAFETY: `new` was given exactly one compiled block for this signature.
+        unsafe { std::mem::transmute::<*mut u8, extern "C" fn(*mut JitState) -> u64>(self.ptr) }
+    }
+
+    /// First bytes of the mapping, for a disassembly check.
+    pub fn as_slice(&self, len: usize) -> &[u8] {
+        // SAFETY: the mapping is at least `len` bytes only when the caller passes a length no
+        // larger than the code that was copied in; `new` cannot know it, so clamp to the page size.
+        unsafe { std::slice::from_raw_parts(self.ptr, len.min(self.len)) }
+    }
+}
+
+impl Drop for Exec {
+    fn drop(&mut self) {
+        // SAFETY: the pointer and length are exactly those returned by mmap in `new`, unmapped once.
+        unsafe {
+            libc::munmap(self.ptr.cast(), self.len);
+        }
+    }
+}
+
+/// A guest-address to compiled-code map.
+///
+/// Without this, every block entry pays a translation plus an `mmap`, which makes a JIT roughly a
+/// hundred times slower than the interpreter — measured, not guessed. The cache is the difference
+/// between the two designs, and it is keyed on the guest address the block starts at.
+pub struct BlockCache {
+    blocks: std::collections::HashMap<u64, Exec>,
+}
+
+impl BlockCache {
+    /// An empty cache.
+    pub fn new() -> Self {
+        Self {
+            blocks: std::collections::HashMap::new(),
+        }
+    }
+
+    /// How many blocks are compiled and resident.
+    pub fn len(&self) -> usize {
+        self.blocks.len()
+    }
+
+    /// True when nothing has been compiled.
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+
+    /// Compile `block` (which must start at `start`) if it is not already cached, and return its
+    /// entry point.
+    pub fn get_or_compile(&mut self, start: u64, block: &crate::block::Block) -> Result<extern "C" fn(*mut JitState) -> u64, Instr> {
+        if let Some(exec) = self.blocks.get(&start) {
+            return Ok(exec.entry());
+        }
+        let code = compile(block)?;
+        let exec = Exec::new(&code);
+        let entry = exec.entry();
+        self.blocks.insert(start, exec);
+        Ok(entry)
+    }
+}
+
+impl Default for BlockCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Compile and run blocks from `state.pc` until a supervisor call, an unsupported instruction, or
+/// `max_blocks` blocks have retired.
+///
+/// Returns the number of blocks executed. Blocks are compiled fresh each time they are entered:
+/// this is a driver for testing and for measuring the translation rate, not a cache. A real
+/// runtime keeps a map from guest address to compiled block, which is the next piece of work.
+pub fn run(
+    words: &[u32],
+    memory: &mut [u8],
+    state: &mut JitState,
+    max_blocks: u64,
+) -> Result<u64, String> {
+    let mut cache = BlockCache::new();
+    run_cached(words, memory, state, max_blocks, &mut cache)
+}
+
+/// The same driver, reusing a caller-owned cache across calls.
+pub fn run_cached(
+    words: &[u32],
+    memory: &mut [u8],
+    state: &mut JitState,
+    max_blocks: u64,
+    cache: &mut BlockCache,
+) -> Result<u64, String> {
+    state.mem_ptr = memory.as_mut_ptr() as u64;
+    state.mem_len = memory.len() as u64;
+
+    // Decode the whole region ONCE. The first version of this driver called `block::scan` inside the
+    // loop, which re-decoded everything from the current pc to the end on every block entry — the
+    // single largest cost in the benchmark, and entirely avoidable.
+    let program = crate::block::scan(words);
+
+    for executed in 0..max_blocks {
+        let pc = state.pc as usize;
+        if pc >= words.len() * 4 {
+            return Ok(executed);
+        }
+        let block = program
+            .block_at(pc as i64)
+            .ok_or_else(|| format!("no block at {pc:#x}"))?;
+
+        let f = cache
+            .get_or_compile(pc as u64, block)
+            .map_err(|i| format!("unsupported: {i:?}"))?;
+        // SAFETY: `f` was compiled with this signature and `state` outlives the call.
+        let exit = f(state);
+        match exit {
+            x if x == Exit::Next as u64 || x == Exit::Jumped as u64 => {}
+            x if x == Exit::SupervisorCall as u64 => return Ok(executed),
+            x if x == Exit::Unsupported as u64 => return Err("unsupported instruction".into()),
+            other => return Err(format!("bad exit code {other}")),
+        }
+        // No "did the pc move?" check: a self-branch (`cbnz x1, #-8` targeting its own block
+        // start) legitimately returns to the same address. The block budget is the bound.
+    }
+    Ok(max_blocks)
 }
