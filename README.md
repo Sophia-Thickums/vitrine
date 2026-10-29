@@ -81,7 +81,11 @@ Measured, not asserted:
 | interpreter agrees with a real emulator | `examples/diff_qemu`: 15 programs through `qemu-aarch64` | 15/15 |
 | compiler agrees with the interpreter | `tests/jit.rs`, same programs, both engines | all match |
 | x86 encoder agrees with the assembler | `examples/diff_x86`: 38 forms, byte-for-byte | all match |
-| the JIT is actually faster | `examples/bench` | 1.92x (32t box), 2.30x (RetrOasis) |
+| the JIT is actually faster | `examples/bench` | 1.87x on a loop; 0.53x on a single-use block |
+| a persisted pipeline cache is worth having | `examples/vk_pipeline`, two processes, Mesa cache off | ~80-87x on creation, three AMD cards |
+
+The pipeline measurement, its method, and the reason a driver cannot be used to validate a cache
+file are in [`MEASUREMENTS.md`](MEASUREMENTS.md).
 
 **What is NOT proven:** floating point is *decoded* but not *executed* — `FMOV`,
 `FMADD`, `FMUL` and FP loads/stores refuse rather than compute, because there is no
