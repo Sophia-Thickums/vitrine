@@ -322,6 +322,10 @@ pub enum Instr {
         rm: u8,
         ra: u8,
     },
+    /// `FMOV Xd, Dn` — FP register to general register, bit-for-bit.
+    FpToGen { dp: bool, rd: u8, rn: u8 },
+    /// `FMOV Dd, Xn` — general register to FP register, bit-for-bit.
+    GenToFp { dp: bool, rd: u8, rn: u8 },
     /// A scalar floating-point load or store (`LDR D0, [X1]` and friends).
     ///
     /// Decoded so that a block can be *analysed* and counted; executing it needs an FP register
@@ -957,6 +961,21 @@ fn decode_fp(word: u32) -> Option<Instr> {
             rd: (word & 0x1F) as u8,
         });
     }
+    // FMOV (general): 1 0 0 11110 type 1 rmode opcode 000000 Rn Rd
+    //   rmode 00, opcode 110/111: FMOV Wd/Xd <- Sn/Dn (to general)
+    //   rmode 01, opcode 110/111: FMOV Sd/Dd <- Wn/Xn (from general)
+    if word & 0x7F3F_FC00 == 0x1E26_0000 {
+        let dp = (word >> 22) & 1 != 0;
+        let rmode = (word >> 19) & 3;
+        let opcode = (word >> 16) & 0x1F;
+        let rn = ((word >> 5) & 0x1F) as u8;
+        let rd = (word & 0x1F) as u8;
+        return Some(match (rmode, opcode) {
+            (0, 0b110) | (0, 0b111) => Instr::FpToGen { dp, rd, rn },
+            (1, 0b110) | (1, 0b111) => Instr::GenToFp { dp, rd, rn },
+            _ => Instr::Unknown { word },
+        });
+    }
     // FMOV register: sf 000 11110 1 type 1 000000 10000 Rn Rd
     if word & 0xFFBF_FC00 == 0x1E20_4000 {
         let dp = (word >> 22) & 1 != 0;
@@ -1139,7 +1158,8 @@ impl Instr {
                 FpOp::Div => "fdiv".into(),
                 FpOp::Neg => "fneg".into(),
             },
-            Instr::FpMov { .. } | Instr::FpMovImm { .. } => "fmov".into(),
+            Instr::FpMov { .. } | Instr::FpMovImm { .. } | Instr::FpToGen { .. }
+            | Instr::GenToFp { .. } => "fmov".into(),
             Instr::FpFused { op, .. } => match op {
                 0 => "fmadd",
                 1 => "fmsub",

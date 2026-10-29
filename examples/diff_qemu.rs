@@ -85,6 +85,18 @@ fn cases() -> Vec<Case> {
             source: "mov x1, #-5\n    mov x0, #0\n    cmp x1, #0\n    b.ge #8\n    add x0, x0, #7",
         },
         Case {
+            name: "fp_add_immediates",
+            source: "fmov d0, #1.0\n    fmov d1, #2.5\n    fadd d2, d0, d1\n    fmov x0, d2\n    lsr x0, x0, #48",
+        },
+        Case {
+            name: "fp_mul_and_div",
+            source: "fmov d0, #3.0\n    fmov d1, #1.5\n    fmul d2, d0, d1\n    fdiv d3, d2, d0\n    fmov x0, d3\n    lsr x0, x0, #48",
+        },
+        Case {
+            name: "fp_sub_negative",
+            source: "fmov d0, #1.0\n    fmov d1, #4.0\n    fsub d2, d0, d1\n    fmov x0, d2\n    lsr x0, x0, #56",
+        },
+        Case {
             name: "sdiv_negative",
             source: "mov x1, #-100\n    mov x2, #7\n    sdiv x0, x1, x2\n    neg_ignore:\n    add x0, x0, #20",
         },

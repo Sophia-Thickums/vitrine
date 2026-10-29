@@ -17,7 +17,7 @@
 //! the *not-borrow* flag, and `V` is signed overflow, which is not the same thing as the sign of
 //! the result. Those two are where hand-written interpreters usually drift.
 
-use crate::a64::{self, AddressMode, Cond, Instr, LogicalOp, MovOp, ShiftType};
+use crate::a64::{self, AddressMode, Cond, FpOp, Instr, LogicalOp, MovOp, ShiftType};
 
 /// What went wrong while executing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +53,11 @@ pub struct Machine {
     pub c: bool,
     /// Signed overflow.
     pub v: bool,
+    /// `V0..V31`, held as raw 128-bit values; scalar code uses the low 64 bits.
+    ///
+    /// Kept as bits rather than `f64` so that a `FMOV` between a general register and an FP
+    /// register is exact, including signalling NaN payloads that a float round-trip would quiet.
+    pub fp: [[u8; 16]; 32],
     /// Flat memory. Address `base + i` maps to `memory[i]`.
     pub memory: Vec<u8>,
     /// Address that `memory[0]` corresponds to.
@@ -64,6 +69,7 @@ impl Machine {
     pub fn new(base: u64, bytes: usize) -> Self {
         Self {
             x: [0; 31],
+            fp: [[0; 16]; 32],
             sp: 0,
             pc: base,
             n: false,
@@ -139,6 +145,26 @@ impl Machine {
     }
 
     /// Read a register at a given operand width, honouring W-register zero-extension.
+    /// Read `Vn` as a double.
+    fn dfp(&self, n: u8) -> f64 {
+        f64::from_bits(u64::from_le_bytes(self.fp[n as usize][..8].try_into().unwrap()))
+    }
+
+    /// Write `Vn` as a double.
+    fn set_dfp(&mut self, n: u8, value: f64) {
+        self.fp[n as usize][..8].copy_from_slice(&value.to_bits().to_le_bytes());
+    }
+
+    /// Read `Vn` as a single-precision value, widened.
+    fn sfp(&self, n: u8) -> f32 {
+        f32::from_bits(u32::from_le_bytes(self.fp[n as usize][..4].try_into().unwrap()))
+    }
+
+    /// Write `Vn` as a single-precision value.
+    fn set_sfp(&mut self, n: u8, value: f32) {
+        self.fp[n as usize][..4].copy_from_slice(&value.to_bits().to_le_bytes());
+    }
+
     fn get_sized(&self, r: u8, sf: bool) -> u64 {
         let v = self.get(r);
         if sf { v } else { v & 0xFFFF_FFFF }
@@ -570,14 +596,115 @@ impl Machine {
                 return Err(Trap::Unsupported);
             }
             Instr::Msr { .. } => return Err(Trap::Unsupported),
-            Instr::FpArith { .. }
-            | Instr::FpMov { .. }
-            | Instr::FpMovImm { .. }
-            | Instr::FpFused { .. }
-            | Instr::FpLoadStore { .. } => {
-                // Decoded so blocks can be analysed and counted, but there is no FP register file
-                // here yet. A wrong answer would be worse than a refusal.
-                return Err(Trap::Unsupported);
+            Instr::FpArith { dp, op, rd, rn, rm } => {
+                if dp {
+                    let a = self.dfp(rn);
+                    let b = self.dfp(rm);
+                    self.set_dfp(rd, apply_fp(a, b, op));
+                } else {
+                    let a = self.sfp(rn);
+                    let b = self.sfp(rm);
+                    self.set_sfp(rd, apply_fp(a as f64, b as f64, op) as f32);
+                }
+                self.pc = next;
+            }
+            Instr::FpFused {
+                dp,
+                op,
+                rd,
+                rn,
+                rm,
+                ra,
+            } => {
+                // op: bit1 selects negate-result, bit0 selects subtract.
+                if dp {
+                    let a = self.dfp(rn);
+                    let b = self.dfp(rm);
+                    let acc = self.dfp(ra);
+                    let mut v = if op & 1 != 0 { acc - a * b } else { acc + a * b };
+                    if op & 2 != 0 {
+                        v = -v;
+                    }
+                    self.set_dfp(rd, v);
+                } else {
+                    let a = self.sfp(rn) as f64;
+                    let b = self.sfp(rm) as f64;
+                    let acc = self.sfp(ra) as f64;
+                    let mut v = if op & 1 != 0 { acc - a * b } else { acc + a * b };
+                    if op & 2 != 0 {
+                        v = -v;
+                    }
+                    self.set_sfp(rd, v as f32);
+                }
+                self.pc = next;
+            }
+            Instr::FpMov { dp, rd, rn } => {
+                let width = if dp { 8 } else { 4 };
+                let src = self.fp[rn as usize];
+                self.fp[rd as usize][..width].copy_from_slice(&src[..width]);
+                self.pc = next;
+            }
+            Instr::FpMovImm { dp, rd, imm8 } => {
+                let value = vfp_expand_imm(imm8, dp);
+                if dp {
+                    self.set_dfp(rd, f64::from_bits(value));
+                } else {
+                    self.set_sfp(rd, f32::from_bits(value as u32));
+                }
+                self.pc = next;
+            }
+            Instr::FpToGen { dp, rd, rn } => {
+                let width = if dp { 8 } else { 4 };
+                let mut buf = [0u8; 8];
+                buf[..width].copy_from_slice(&self.fp[rn as usize][..width]);
+                let value = u64::from_le_bytes(buf);
+                self.set_sized(rd, dp, value);
+                if dp {
+                    self.set(rd, value);
+                }
+                self.pc = next;
+            }
+            Instr::GenToFp { dp, rd, rn } => {
+                let width = if dp { 8 } else { 4 };
+                let value = self.get_sized(rn, dp);
+                let bytes = value.to_le_bytes();
+                self.fp[rd as usize] = [0; 16];
+                self.fp[rd as usize][..width].copy_from_slice(&bytes[..width]);
+                self.pc = next;
+            }
+            Instr::FpLoadStore {
+                load,
+                size,
+                rt,
+                rn,
+                mode,
+            } => {
+                let base = self.get_sp(rn);
+                let (address, writeback) = match mode {
+                    AddressMode::Offset { imm } | AddressMode::Unscaled { imm } => {
+                        (base.wrapping_add_signed(imm), None)
+                    }
+                    AddressMode::PreIndex { imm } => {
+                        let a = base.wrapping_add_signed(imm);
+                        (a, Some(a))
+                    }
+                    AddressMode::PostIndex { imm } => (base, Some(base.wrapping_add_signed(imm))),
+                    _ => return Err(Trap::Unsupported),
+                };
+                if load {
+                    let raw = self.read(address, size)?;
+                    self.fp[rt as usize] = [0; 16];
+                    self.fp[rt as usize][..size as usize]
+                        .copy_from_slice(&raw.to_le_bytes()[..size as usize]);
+                } else {
+                    let mut buf = [0u8; 8];
+                    buf[..size as usize].copy_from_slice(&self.fp[rt as usize][..size as usize]);
+                    self.write(address, size, u64::from_le_bytes(buf))?;
+                }
+                if let Some(sp) = writeback {
+                    self.set_sp(rn, sp);
+                }
+                self.pc = next;
             }
         }
 
@@ -729,4 +856,34 @@ fn sign_extend_to(value: u64, from: u32, to: u32) -> u64 {
     } else {
         v
     }
+}
+
+/// Apply a scalar FP operation.
+fn apply_fp(a: f64, b: f64, op: FpOp) -> f64 {
+    match op {
+        FpOp::Add => a + b,
+        FpOp::Sub => a - b,
+        FpOp::Mul => a * b,
+        FpOp::Div => a / b,
+        FpOp::Neg => -a,
+    }
+}
+
+/// `VFPExpandImm` — turn the 8-bit immediate in `FMOV` into an FP bit pattern.
+///
+/// The exponent is `NOT(b) : b*(E-3) : c:d` and the fraction is `d:c...` zero-filled, which is why
+/// the encoding cannot be read as a small integer. Getting this wrong makes `fmov d0, #1.0` produce
+/// a denormal that looks like zero in most tests.
+fn vfp_expand_imm(imm8: u8, dp: bool) -> u64 {
+    let sign = u64::from((imm8 >> 7) & 1);
+    let b = (imm8 >> 6) & 1;
+    let exp_bits = if dp { 11 } else { 8 };
+    let frac_bits = if dp { 52 } else { 23 };
+
+    // exponent = NOT(b) : b*(E-3) : c:d — the top bit is NOT(b), already in position.
+    let not_b = 1 - u64::from(b);
+    let mid = u64::from(b) * ((1u64 << (exp_bits - 3)) - 1);
+    let exponent = (not_b << (exp_bits - 1)) | (mid << 2) | u64::from((imm8 >> 4) & 3);
+    let fraction = u64::from(imm8 & 0xF) << (frac_bits - 4);
+    (sign << (exp_bits + frac_bits)) | (exponent << frac_bits) | fraction
 }
