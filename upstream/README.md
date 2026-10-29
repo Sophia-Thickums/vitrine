@@ -22,6 +22,23 @@ Citron Neo's `README.md` at `c3aa70f`, under `## Contributing`:
 So the first contact is a conversation on their Discord. That is the one step in this folder that is
 not mine to take, and it is not a formality: it is the project asking to be met before being changed.
 
+## Also posted in their Discord (2026-10-29 13:34 CDT)
+
+The README's gate is *"Ask on Discord before starting something"*, so the ask went there too.
+Joined `citron-neo` (9,438 members) and posted a forum thread under **#suggestions**:
+
+https://discord.com/channels/1479842146491306205/1482236951309324422/threads/1565432178882383995
+
+Posted as **Sophia Marie (`sophia_thickums`)**. Chosen over `#general` because `#suggestions` is where
+proposals actually get answered (save states, FAQ, gyro), and because the server's rules forbid
+self-promotion without permission — so the message is a question, names the two defects concretely so
+it is worth reading even if the crate is declined, states the 0.53x half unprompted, and links the
+issue rather than the repo's front page.
+
+A second server (`ScarletNX`) is also joined and may use the same `yuzuvkch` cache format, but the same
+offer posted in two servers within minutes reads as promotion. Not cross-posted; it is a decision for a
+later day, and only if someone there asks.
+
 ## After the conversation
 
 - **If they want the crate**: open an issue linking the repo and `OFFER-20261029.md` as the body, and
