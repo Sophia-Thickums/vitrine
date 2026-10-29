@@ -43,7 +43,12 @@ The C++ code would have deleted all of it.
 | `content` | choose the winning update and DLC out of everything installed |
 | `env` | the serialized shader environment, field for field with `GenericEnvironment` |
 | `cursor` | bounds-checked little-endian reader; every short read is an `Err`, never a panic |
-| `ffi` | the C ABI in `include/vitrine.h` |
+| `a64` | AArch64 decode |
+| `block` | basic-block analysis, whole-region (`scan`) and at-an-address (`scan_at`) |
+| `interp` | reference interpreter, pinned to `qemu-aarch64` |
+| `x86` | x86-64 emitter |
+| `jit` | block compiler, `AddressJit` runtime, and the guest-memory guard |
+| `ffi` | the C ABI in `include/vitrine.h` — pipeline cache, content selection, and the JIT |
 
 The cache format is **unchanged**: magic `yuzuvkch`, version 1, 16-byte keys. An existing user's
 shaders load without rebuilding. The two implementations can read the same file.
@@ -136,9 +141,13 @@ link that — `cpp/build_cpp.sh --static` shows the link line.
 
 ## What is not here yet, and why
 
-The other two places Rust genuinely pays for itself — the ARM64 JIT and the HLE service layer —
-are not in this crate yet. They are larger jobs and they need a booting core to be measured against.
-This crate is deliberately the piece that can be finished, tested and merged on its own.
+**The HLE service layer** is not here: hundreds of small IPC handlers that need a booting core to be
+tested against, and nothing to gain from being written before one exists.
+
+**The JIT is here but incomplete.** It translates a subset of AArch64 and runs it, and it has a C ABI
+plus a `Core::ArmInterface` backend (`cpp/citron/`). What it does not yet do: SIMD/NEON, LL/SC
+atomics, pointer authentication, and AArch32. `cpp/citron/INTEGRATION.md` lists the steps to wire it
+into the emulator and says plainly that it has never been compiled inside Citron.
 
 ## Status
 
@@ -152,8 +161,17 @@ This is a working core, not a finished emulator. What that means concretely:
 - **Compiler** — emits x86-64 for the same set, agrees with the interpreter including the FP
   register file, and is 1.87x faster on a loop. On a straight-line block that runs once it is
   *slower* (0.53x), because the driver's per-entry work dominates.
+- **Runtime** — `AddressJit` fetches blocks from guest memory **by address** through a reader that can
+  refuse (an unmapped page is negative, not a zero word), caches translations by address, and
+  invalidates by **overlap** rather than by containment.
+- **Safety** — every emitted load and store is bounds-checked before it runs; an access outside the
+  window returns `DataAbort` with `pc` left on the faulting instruction. Before that guard the
+  generated code read host memory with no check at all.
+- **C++ boundary** — `cpp/jit_check` and `cpp/citron/adapter_check` are real programs compiled
+  against the library; 11 and 18 checks respectively.
 - **Not present** — MMU/TLB, memory protection, system registers, HLE services, a Vulkan backend,
-  thread scheduling. The memory model is one flat array.
+  thread scheduling. The JIT's memory model is one flat window plus the guard; the emulator's page
+  table is not consulted by generated code yet.
 
 ## Licence
 
