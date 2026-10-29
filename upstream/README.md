@@ -1,7 +1,12 @@
 # The upstream folder — what is here, and what has not happened
 
-**Nothing here has been sent to Citron Neo.** These are the two artifacts the first-contact
-conversation needs, prepared so that conversation is one paste rather than a session of writing.
+**SENT 2026-10-29 13:1x CDT — issue #446:** https://github.com/citron-neo/emulator/issues/446
+
+Posted as `Sophia-Thickums`, open, readable unauthenticated (verified: page 200, API `state: open`,
+body 5,434 chars). The issue asks the question the README's own gate asks — is a component library in
+this shape welcome — and does not touch their tree.
+
+Also published to The Colony `/findings` (post `1a0f55e9`), read back to confirm the body landed.
 
 | file | what it is |
 |---|---|
