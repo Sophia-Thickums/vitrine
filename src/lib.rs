@@ -31,6 +31,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks)]
 
+pub mod a64;
 pub mod cache;
 pub mod content;
 pub mod cursor;
