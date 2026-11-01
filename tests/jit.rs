@@ -364,3 +364,108 @@ fn the_compiler_refuses_an_exclusive_instead_of_emitting_wrong_code() {
         Ok(_) => panic!("the compiler must not emit code for an exclusive it cannot honour"),
     }
 }
+
+// ── gigawatt's split of the tag arm (2026-11-01): three questions, not one ───────────────────────
+
+#[test]
+fn a_one_byte_access_is_bounded_by_the_same_guard_the_wide_ones_use() {
+    // The question the earlier arms left open: "the guard covers the last byte" and "the guard is not
+    // consulted for a one-byte access" are different claims, and a reader of `mem_guard` cannot tell
+    // which one was built, because `size > 1` only skips the `+ size - 1`, it does not skip the call.
+    // ldrb w0, [x1] ; ret
+    let words: &'static [u32] = &[0x3940_0020, 0xD65F_03C0];
+    let window = [0u8; 64];
+    let base = window.as_ptr() as u64;
+
+    let mut ok = JitState::new(base, 64);
+    ok.pc = 0;
+    ok.x[1] = 63;
+    let mut jit = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), ok);
+    jit.run(4).expect("runs");
+    assert_ne!(
+        jit.state().last_exit,
+        jit::Exit::DataAbort as u64,
+        "the last byte of the window is readable by a size-1 access"
+    );
+
+    let mut bad = JitState::new(base, 64);
+    bad.pc = 0;
+    bad.x[1] = 64;
+    let mut jit2 = jit::AddressJit::new(|a: u64| words.get((a / 4) as usize).copied(), bad);
+    jit2.run(4).expect("returns");
+    assert_eq!(
+        jit2.state().last_exit,
+        jit::Exit::DataAbort as u64,
+        "one byte past the window aborts for size 1 as well, so the guard IS consulted"
+    );
+}
+
+#[test]
+fn a_faulting_pair_leaves_both_destination_registers_untouched() {
+    // gigawatt's third assertion: an ldp writes two registers, so an implementation that faults
+    // correctly and corrupts the guest on the way passes `fault_addr == base + 56`. Here the guard
+    // runs BEFORE either load and before any writeback, so nothing should be committed — this arm is
+    // what turns "by construction" into evidence.
+    // ldp x0, x1, [x2] ; ret
+    let program: &'static [u32] = &[0xA940_0440, 0xD65F_03C0];
+    let mut memory = vec![0u8; 64];
+    let mut state = JitState::new(0, 0);
+    state.x[2] = 56;
+    state.x[0] = 0xDEAD_BEEF_0000_0000;
+    state.x[1] = 0xFEED_FACE_0000_0001;
+    jit::run(program, &mut memory, &mut state, 8).expect("driver returns");
+
+    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64, "the pair aborts");
+    assert_eq!(
+        state.x[0], 0xDEAD_BEEF_0000_0000,
+        "the first destination must not be written by a faulting pair"
+    );
+    assert_eq!(
+        state.x[1], 0xFEED_FACE_0000_0001,
+        "nor the second — the interesting failure is a correct abort that corrupts the guest"
+    );
+}
+
+#[test]
+fn a_low_bit_tagged_base_is_bounds_checked_as_given_not_stripped() {
+    // gigawatt's mid-window case, recorded as a DECISION rather than left implicit: this guard does
+    // not mask low bits. A tagged base inside the window therefore RUNS, at the tagged address, and
+    // reports that same address in fault_addr when the tag pushes the span out. The two readings —
+    // strip the tag, or refuse a tagged entry — are both defensible, and this arm is the record of
+    // which one exists here: neither. It is a decision to make deliberately, not to inherit.
+    // ldp x0, x1, [x2] ; ret
+    let program: &'static [u32] = &[0xA940_0440, 0xD65F_03C0];
+
+    // Mid-window, tag 0b10 set: base 32 | 2 = 34. The span [34, 50) is inside a 64-byte window, so
+    // the guard passes and the access happens at 34 — shifted, not refused.
+    let mut memory = vec![0u8; 64];
+    for (i, b) in memory.iter_mut().enumerate() {
+        *b = i as u8;
+    }
+    let mut state = JitState::new(0, 0);
+    state.x[2] = 34;
+    jit::run(program, &mut memory, &mut state, 8).expect("driver returns");
+    assert_ne!(
+        state.last_exit,
+        jit::Exit::DataAbort as u64,
+        "a tagged base that stays inside the window runs: the tag is not a fault here"
+    );
+    assert_eq!(
+        state.x[0],
+        u64::from_le_bytes([34, 35, 36, 37, 38, 39, 40, 41]),
+        "and it reads at the tagged address, so the guest's low bits were not masked"
+    );
+
+    // End-of-window, tag straddles: base 62 | 3 = 63, span [63, 79) crosses the end. The abort must
+    // report the tagged address, because that is the address the guest asked for.
+    let mut memory2 = vec![0u8; 64];
+    let mut st2 = JitState::new(0, 0);
+    st2.x[2] = 63;
+    jit::run(program, &mut memory2, &mut st2, 8).expect("driver returns");
+    assert_eq!(st2.last_exit, jit::Exit::DataAbort as u64, "straddling span aborts");
+    assert_eq!(
+        st2.fault_addr,
+        memory2.as_ptr() as u64 + 63,
+        "fault_addr is the tagged base, not a stripped one"
+    );
+}
