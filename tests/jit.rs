@@ -415,7 +415,11 @@ fn a_faulting_pair_leaves_both_destination_registers_untouched() {
     state.x[1] = 0xFEED_FACE_0000_0001;
     jit::run(program, &mut memory, &mut state, 8).expect("driver returns");
 
-    assert_eq!(state.last_exit, jit::Exit::DataAbort as u64, "the pair aborts");
+    assert_eq!(
+        state.last_exit,
+        jit::Exit::DataAbort as u64,
+        "the pair aborts"
+    );
     assert_eq!(
         state.x[0], 0xDEAD_BEEF_0000_0000,
         "the first destination must not be written by a faulting pair"
@@ -462,7 +466,11 @@ fn a_low_bit_tagged_base_is_bounds_checked_as_given_not_stripped() {
     let mut st2 = JitState::new(0, 0);
     st2.x[2] = 63;
     jit::run(program, &mut memory2, &mut st2, 8).expect("driver returns");
-    assert_eq!(st2.last_exit, jit::Exit::DataAbort as u64, "straddling span aborts");
+    assert_eq!(
+        st2.last_exit,
+        jit::Exit::DataAbort as u64,
+        "straddling span aborts"
+    );
     assert_eq!(
         st2.fault_addr,
         memory2.as_ptr() as u64 + 63,
